@@ -1,0 +1,47 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: mtc-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: mtc-searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+
+  api:
+    build:
+      context: ./app
+    container_name: mtc-chatbot-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=gpt-oss:20b
+      - SEARXNG_URL=http://searxng:8080/search
+      - MAX_SEARCH_RESULTS=5
+      - MAX_PAGE_CHARS=6000
+    depends_on:
+      - ollama
+      - searxng
+
+volumes:
+  ollama_data:
