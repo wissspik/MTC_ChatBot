@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.classifier import (
     build_profile_snapshot,
-    classify_profile_message,
     get_next_profile_question,
     merge_profile_updates,
 )
@@ -56,6 +55,7 @@ from app.schemas import (
     StartRoadmapItemRequest,
 )
 from app.telegram_client import TelegramClient
+from app.trained_classifier import classify_profile_message_ml as classify_profile_message
 
 
 app = FastAPI(title="Progressors Learning Backend")
