@@ -1,301 +1,712 @@
-Backend API quick check
-=======================
+Backend API contract
+====================
 
 Base URL:
 http://localhost:8000
 
-All normal responses have this shape:
+All normal API responses, except GET /health, have this wrapper:
 {
   "ok": true,
   "data": {}
 }
 
+404 errors use FastAPI shape:
+{
+  "detail": "USER_PROFILE not found"
+}
+
+
+Common response objects
+=======================
+
+UserProfile
+-----------
+This object is returned inside "profile" or "user_profile".
+
+{
+  "user_id": "uuid",
+  "telegram_id": 123,
+  "username": "string|null",
+  "first_name": "string|null",
+  "last_name": "string|null",
+
+  "goal_text": "string|null",
+  "direction": "string|null",
+  "specific_track": "string|null",
+  "target_role": "string|null",
+  "goal_reason": "string|null",
+
+  "current_level": "beginner|basic|professional|null",
+  "time_per_week_label": "string|null",
+  "time_per_week_value": 5,
+  "preferred_formats": ["video", "practice", "article"],
+  "wishes": "string|null",
+
+  "preference_json": {
+    "collected": true,
+    "hard_rules": [],
+    "soft_rules": [],
+    "blocked_authors": [],
+    "blocked_channels": [],
+    "blocked_sources": [],
+    "preferred_sources": [],
+    "format_weights": {
+      "video": 1.0,
+      "article": 1.0,
+      "practice": 1.0
+    },
+    "max_video_minutes": null,
+    "explanation_style": [],
+    "pace_preference": "normal|short_steps|intensive|relaxed"
+  },
+
+  "notification_settings_json": {
+    "push_enabled": true,
+    "motivation_style": "duolingo_aggressive",
+    "quiet_hours": {
+      "enabled": true,
+      "start": "22:00",
+      "end": "09:00"
+    },
+    "max_pushes_per_day": 3,
+    "deadline_pushes": true,
+    "streak_pushes": true,
+    "xp_pushes": true,
+    "allow_roast": true
+  },
+
+  "global_xp": 0,
+  "streak_days": 0,
+  "streak_multiplier": 1.0,
+  "last_activity": "YYYY-MM-DD|null",
+  "dialog_state": "start|collecting_profile|ready_for_roadmap_generation|roadmap_ready",
+  "profile_json": {},
+  "created_at": "ISO datetime",
+  "updated_at": "ISO datetime"
+}
+
+
+Roadmap
+-------
+{
+  "roadmap_id": "uuid",
+  "profile_id": "uuid",
+  "title": "string",
+  "direction": "string|null",
+  "target_role": "string|null",
+  "level": "string|null",
+  "estimated_duration_weeks": 4,
+  "hours_per_week_label": "string|null",
+  "route_logic": "string|null",
+  "status": "draft|active|paused|completed|replaced|archived",
+  "version": 1,
+  "roadmap_json": {},
+  "created_at": "ISO datetime",
+  "updated_at": "ISO datetime"
+}
+
+
+RoadmapItem
+-----------
+{
+  "item_id": "uuid",
+  "roadmap_id": "uuid",
+  "profile_id": "uuid",
+  "step_order": 1,
+  "skill_name": "string",
+  "topic_name": "string|null",
+  "name": "string",
+  "description": "string|null",
+  "resources": "string|null",
+  "source_type": "video|text|practice|course|lecture|article|collection|project",
+  "source_name": "string|null",
+  "is_free": true,
+  "language": "ru",
+  "difficulty": "beginner|basic|intermediate|advanced|null",
+  "duration_minutes": 20,
+  "estimated_hours": 1.5,
+  "why_this_material": "string|null",
+  "skill_result": "string|null",
+  "career_value": "string|null",
+  "practice_task": "string|null",
+  "self_check_questions": [],
+  "completion_check_type": "self_check|quiz|practice|note|project|manual",
+  "completion_check_json": {},
+  "min_seconds_before_complete": 600,
+  "issued_at": "ISO datetime|null",
+  "recommended_deadline_at": "ISO datetime|null",
+  "deadline_at": "ISO datetime|null",
+  "xp": 80,
+  "pending_xp": 0,
+  "verified_xp": 0,
+  "xp_policy_json": {},
+  "fraud_score": 0,
+  "streak_multiplier": 1.0,
+  "status": "not_started|in_progress|pending_check|completed|completed_late|expired|skipped|replaced",
+  "user_note": "string|null",
+  "completed_at": "ISO datetime|null",
+  "item_json": {},
+  "created_at": "ISO datetime",
+  "updated_at": "ISO datetime"
+}
+
+
+Progress
+--------
+{
+  "total_items": 8,
+  "completed_items": 0,
+  "in_progress_items": 0,
+  "skipped_items": 0,
+  "not_started_items": 8,
+  "total_xp": 640,
+  "earned_xp": 0,
+  "completion_percent": 0,
+  "current_item": "RoadmapItem|null",
+  "next_item": "RoadmapItem|null"
+}
+
+
+RoadmapFeedback
+---------------
+{
+  "feedback_id": "uuid",
+  "profile_id": "uuid",
+  "roadmap_id": "uuid",
+  "item_id": "uuid|null",
+  "feedback_type": "useful|not_suitable|too_hard|too_easy|already_completed|change_request",
+  "feedback_text": "string|null",
+  "created_at": "ISO datetime"
+}
+
+
+MotivationPush
+--------------
+{
+  "push_id": "uuid",
+  "profile_id": "uuid",
+  "roadmap_id": "uuid|null",
+  "item_id": "uuid|null",
+  "push_type": "deadline_warning|deadline_expired|streak_risk|xp_opportunity|return_to_route|test_required",
+  "tone": "soft|neutral|duolingo_aggressive",
+  "message_text": "string",
+  "button_text": "string|null",
+  "button_payload": {},
+  "scheduled_at": "ISO datetime",
+  "sent_at": "ISO datetime|null",
+  "status": "planned|sent|cancelled|failed|skipped_by_quiet_hours|rate_limited",
+  "created_at": "ISO datetime"
+}
+
+
+Endpoints
+=========
 
 1. GET /health
-Checks that backend is alive.
-Returns:
-- status: "ok"
+---------------
+Logic:
+- Checks that backend process is alive.
+- Does not touch database.
+
+Response:
+{
+  "status": "ok"
+}
 
 
 2. POST /api/profile/analyze
-Starts or continues profile collection from a user message.
-Uses Gemini LLM.
+----------------------------
+Logic:
+- Creates or updates UserProfile by telegram_id.
+- Runs local classifier first.
+- Then tries Gemini/OpenAI-compatible LLM for semantic enrichment.
+- If LLM fails, returns 200 with classifier fallback.
+- Saves extracted fields into USER_PROFILE.
 
 Body:
 {
   "telegram_id": 123,
-  "username": "user",
-  "first_name": "User",
-  "user_message": "Я хочу стать Python разработчиком",
+  "username": "user|null",
+  "first_name": "User|null",
+  "last_name": "User|null",
+  "user_message": "Я хочу стать Python backend разработчиком, знаю основы, 5 часов в неделю, люблю практику",
   "dialog_history": []
 }
 
-Returns:
-- llm_output: what LLM understood and next question if needed
-- user_profile: saved profile row
+Response data keys:
+{
+  "classifier_output": {
+    "User_profile_update": {
+      "Goal_text": "string|null",
+      "Direction": "string|null",
+      "Specific_track": "string|null",
+      "Target_role": "string|null",
+      "Current_level": "beginner|basic|professional|null",
+      "Time_per_week_value": 5,
+      "Time_per_week_label": "string|null",
+      "Preferred_formats": ["practice", "article"],
+      "Preference_json": {}
+    },
+    "signals": {
+      "goal": [],
+      "level": "string|null",
+      "time": "string|null",
+      "formats": []
+    }
+  },
+  "llm_output": {
+    "Db_target": "USER_PROFILE",
+    "Action": "ask_question|ready_for_roadmap",
+    "Understood_request": "string",
+    "Extracted_facts": {},
+    "User_profile_update": {},
+    "Missing_fields": [],
+    "Assumptions": [],
+    "Need_question": false,
+    "Next_question": {
+      "Type": "goal|specificity|level|time|format|preferences|blocked_source_detail|none",
+      "Text": "string",
+      "Buttons": [],
+      "Allow_multiple": false
+    },
+    "Ready_for_roadmap_generation": true,
+    "Classifier_output": {},
+    "Backend_decision": {}
+  },
+  "fallback_output": "same shape as llm_output|null, present only when LLM failed",
+  "llm_status": "failed_classifier_fallback, present only when LLM failed",
+  "user_profile": "UserProfile"
+}
+
+Important:
+- Normal success may not include "fallback_output" and "llm_status".
+- If fallback is used, "llm_output" is null.
 
 
 3. GET /api/profile/{telegram_id}
-Returns one user profile by Telegram id.
+---------------------------------
+Logic:
+- Reads USER_PROFILE by telegram_id.
+- Returns 404 if profile does not exist.
 
-Returns:
-- profile
-- user_profile alias for compatibility
+Response data:
+{
+  "profile": "UserProfile",
+  "user_profile": "UserProfile"
+}
+
+"profile" and "user_profile" are the same object. "user_profile" is kept for old frontend compatibility.
 
 
 4. PATCH /api/profile/{telegram_id}
-Manually updates profile fields.
-Useful when the bot already collected answers from buttons.
+-----------------------------------
+Logic:
+- Reads USER_PROFILE by telegram_id.
+- Updates only fields sent in body.
+- Returns updated profile.
 
-Body example:
+Allowed body fields:
 {
-  "target_role": "junior python backend developer",
-  "current_level": "beginner",
+  "username": "string|null",
+  "first_name": "string|null",
+  "last_name": "string|null",
+  "goal_text": "string|null",
+  "direction": "string|null",
+  "specific_track": "string|null",
+  "target_role": "string|null",
+  "goal_reason": "string|null",
+  "current_level": "beginner|basic|professional|null",
+  "time_per_week_label": "string|null",
   "time_per_week_value": 5,
-  "preferred_formats": ["practice", "article"]
+  "preferred_formats": ["video", "practice", "article"],
+  "wishes": "string|null",
+  "preference_json": {},
+  "notification_settings_json": {},
+  "dialog_state": "string|null",
+  "profile_json": {}
 }
 
-Returns:
-- user_profile
+Response data:
+{
+  "user_profile": "UserProfile"
+}
 
 
 5. GET /api/profile/{telegram_id}/state
-Returns full current state for the bot screen.
+---------------------------------------
+Logic:
+- Reads profile.
+- Reads active/current roadmap.
+- If roadmap exists, returns roadmap, items and progress.
+- If roadmap does not exist, roadmap/progress are null and items are [].
 
-Returns:
-- profile
-- roadmap
-- items
-- progress
-- old aliases: user_profile, current_roadmap, roadmap_items
+Response data:
+{
+  "profile": "UserProfile",
+  "roadmap": "Roadmap|null",
+  "items": ["RoadmapItem"],
+  "progress": "Progress|null",
+  "user_profile": "UserProfile",
+  "current_roadmap": "Roadmap|null",
+  "roadmap_items": ["RoadmapItem"]
+}
 
 
 6. GET /api/profile/{telegram_id}/roadmaps
-Lists all roadmaps for user.
+------------------------------------------
+Logic:
+- Reads profile.
+- Returns user's roadmaps ordered by updated_at desc.
 
-Optional query:
+Query:
 ?status=active
-
-Returns:
-- profile
-- roadmaps
-- count
-- status_filter
-
-
-7. GET /api/profile/{telegram_id}/roadmap/current
-Returns active/current roadmap.
-
-Returns:
-- roadmap
-- items
-- progress
-
-
-8. GET /api/profile/{telegram_id}/progress
-Returns profile plus current roadmap progress.
-
-Returns:
-- profile
-- roadmap
-- progress
-
-
-9. POST /api/roadmap/generate
-Generates roadmap from saved profile.
-Uses Gemini LLM.
-
-Body:
-{
-  "telegram_id": 123,
-  "dialog_history": []
-}
-
-Returns:
-- llm_output
-- user_profile
-- created.roadmap
-- created.items
-- created.pushes
-
-
-10. GET /api/roadmap/{roadmap_id}
-Returns full roadmap details.
-
-Returns:
-- roadmap
-- items
-- progress
-- feedback
-
-
-11. PATCH /api/roadmap/{roadmap_id}/status
-Changes roadmap status.
-
-Body:
-{
-  "telegram_id": 123,
-  "status": "active"
-}
+?limit=20
 
 Allowed status:
 draft, active, paused, completed, replaced, archived
 
-Returns:
-- roadmap
+Response data:
+{
+  "profile": "UserProfile",
+  "roadmaps": ["Roadmap"],
+  "count": 0,
+  "status_filter": "active|null"
+}
+
+
+7. GET /api/profile/{telegram_id}/roadmap/current
+-------------------------------------------------
+Logic:
+- Reads profile.
+- Finds current roadmap: active first, then latest not archived.
+- Returns 404 if no roadmap exists.
+
+Response data:
+{
+  "roadmap": "Roadmap",
+  "items": ["RoadmapItem"],
+  "progress": "Progress",
+  "roadmap_items": ["RoadmapItem"]
+}
+
+
+8. GET /api/profile/{telegram_id}/progress
+------------------------------------------
+Logic:
+- Reads profile.
+- Reads current roadmap if it exists.
+- Returns progress for current roadmap.
+
+Response data:
+{
+  "profile": "UserProfile",
+  "roadmap": "Roadmap|null",
+  "progress": "Progress|null",
+  "user_profile": "UserProfile",
+  "current_roadmap": "Roadmap|null"
+}
+
+
+9. POST /api/roadmap/generate
+-----------------------------
+Logic:
+- Reads saved UserProfile.
+- Tries LLM roadmap generation first.
+- If LLM fails or is rate-limited, creates classifier template roadmap.
+- Saves Roadmap, RoadmapItems and MotivationPushes.
+- Updates UserProfile dialog_state.
+
+Body:
+{
+  "telegram_id": 123,
+  "dialog_history": [],
+  "current_datetime": "ISO datetime|null"
+}
+
+Response data:
+{
+  "generation_status": "ok|llm_failed_template_fallback",
+  "llm_output": {
+    "User_profile_update": {},
+    "Roadmap_insert": {},
+    "Roadmap_items_insert": [],
+    "Motivation_pushes_insert": []
+  },
+  "user_profile": "UserProfile",
+  "created": {
+    "roadmap": "Roadmap",
+    "items": ["RoadmapItem"],
+    "pushes": ["MotivationPush"]
+  }
+}
+
+
+10. GET /api/roadmap/{roadmap_id}
+---------------------------------
+Logic:
+- Reads roadmap by roadmap_id.
+- Reads all items.
+- Reads progress.
+- Reads feedback history.
+
+Response data:
+{
+  "roadmap": "Roadmap",
+  "items": ["RoadmapItem"],
+  "progress": "Progress",
+  "feedback": ["RoadmapFeedback"],
+  "roadmap_items": ["RoadmapItem"],
+  "roadmap_feedback": ["RoadmapFeedback"]
+}
+
+
+11. PATCH /api/roadmap/{roadmap_id}/status
+------------------------------------------
+Logic:
+- Checks profile by telegram_id.
+- Updates roadmap status only if roadmap belongs to this profile.
+
+Body:
+{
+  "telegram_id": 123,
+  "status": "draft|active|paused|completed|replaced|archived"
+}
+
+Response data:
+{
+  "roadmap": "Roadmap"
+}
 
 
 12. GET /api/roadmap/{roadmap_id}/items
-Returns roadmap steps.
+---------------------------------------
+Logic:
+- Reads roadmap.
+- Reads all roadmap items ordered by step_order.
 
-Returns:
-- roadmap
-- items
-- count
-- roadmap_items alias
+Response data:
+{
+  "roadmap": "Roadmap",
+  "items": ["RoadmapItem"],
+  "count": 0,
+  "roadmap_items": ["RoadmapItem"]
+}
 
 
 13. GET /api/roadmap/{roadmap_id}/feedback
-Returns feedback history for roadmap.
+------------------------------------------
+Logic:
+- Reads roadmap.
+- Reads feedback history.
 
-Optional query:
+Query:
 ?limit=30
 
-Returns:
-- roadmap
-- feedback
-- count
-- roadmap_feedback alias
+Response data:
+{
+  "roadmap": "Roadmap",
+  "feedback": ["RoadmapFeedback"],
+  "count": 0,
+  "roadmap_feedback": ["RoadmapFeedback"]
+}
 
 
 14. GET /api/roadmap/{roadmap_id}/item/{item_id}/test
-Returns mini-test/check data for one roadmap item.
+-----------------------------------------------------
+Logic:
+- Reads one roadmap item.
+- Returns only test/check fields for completion screen.
 
-Returns:
-- mini_test
+Response data:
+{
+  "mini_test": {
+    "item_id": "uuid",
+    "roadmap_id": "uuid",
+    "name": "string",
+    "description": "string|null",
+    "resources": "string|null",
+    "completion_check_type": "self_check|quiz|practice|note|project|manual",
+    "completion_check_json": {},
+    "self_check_questions": [],
+    "min_seconds_before_complete": 600,
+    "xp": 80,
+    "xp_policy_json": {}
+  }
+}
 
 
 15. POST /api/roadmap/item/{item_id}/start
-Marks item as in_progress.
+------------------------------------------
+Logic:
+- Checks profile by telegram_id.
+- If item belongs to profile and is not_started, marks it in_progress.
+- If it is already started/completed, returns existing item.
 
 Body:
 {
   "telegram_id": 123
 }
 
-Returns:
-- roadmap_item
+Response data:
+{
+  "roadmap_item": "RoadmapItem"
+}
 
 
 16. POST /api/roadmap/item/{item_id}/skip
-Marks item as skipped and saves feedback.
+-----------------------------------------
+Logic:
+- Checks profile by telegram_id.
+- Marks item as skipped.
+- Saves roadmap_feedback with selected reason.
 
 Body:
 {
   "telegram_id": 123,
-  "reason": "already_completed",
-  "feedback_text": "Эту тему уже знаю"
+  "reason": "not_suitable|too_hard|too_easy|already_completed|change_request",
+  "feedback_text": "string|null",
+  "current_datetime": "ISO datetime|null"
 }
 
-Allowed reason:
-not_suitable, too_hard, too_easy, already_completed, change_request
-
-Returns:
-- roadmap_item
-- roadmap_feedback
+Response data:
+{
+  "roadmap_item": "RoadmapItem",
+  "roadmap_feedback": "RoadmapFeedback"
+}
 
 
 17. POST /api/roadmap/item/complete
-Completes item or moves it to pending_check.
-Calculates XP.
+-----------------------------------
+Logic:
+- Checks profile by telegram_id.
+- Completes item or moves it to pending_check.
+- Calculates pending_xp.
+- Updates profile XP/streak if repository logic confirms completion.
 
 Body:
 {
   "telegram_id": 123,
   "item_id": "uuid",
   "spent_seconds": 600,
-  "answers": [{"question": "Что сделал?", "answer": "Изучил тему"}],
-  "note_text": "Мой конспект"
+  "answers": [{"question": "string", "answer": "string"}],
+  "note_text": "string|null",
+  "practice_result": "string|null",
+  "current_datetime": "ISO datetime|null"
 }
 
-Returns:
-- completed_item
-- user_profile
-- xp_earned
+Response data:
+{
+  "completed_item": "RoadmapItem",
+  "user_profile": "UserProfile",
+  "xp_earned": {
+    "pending_xp": 80,
+    "status": "completed|pending_check",
+    "global_xp": 0
+  }
+}
 
 
 18. POST /api/roadmap/feedback
-Saves user feedback and asks LLM to correct 1-2 items.
-If Gemini is temporarily unavailable, feedback is still saved and response is 200 with correction_status = "llm_failed".
+------------------------------
+Logic:
+- Saves user feedback.
+- Sends profile, roadmap, selected items and feedback to LLM.
+- LLM can update roadmap and replace 1-2 items.
+- If LLM fails, feedback is still saved and response is 200.
 
 Body:
 {
   "telegram_id": 123,
   "roadmap_id": "uuid",
   "item_ids": ["uuid"],
-  "feedback_type": "change_request",
-  "feedback_text": "Сделай шаг более практическим",
+  "feedback_type": "useful|not_suitable|too_hard|too_easy|already_completed|change_request",
+  "feedback_text": "string|null",
   "max_items_to_change": 1,
-  "dialog_history": []
+  "dialog_history": [],
+  "current_datetime": "ISO datetime|null"
 }
 
-Allowed feedback_type:
-useful, not_suitable, too_hard, too_easy, already_completed, change_request
+Response data on LLM success:
+{
+  "saved_feedback": "RoadmapFeedback",
+  "llm_output": {},
+  "updated_roadmap": "Roadmap|null",
+  "changed_items": ["RoadmapItem"],
+  "pushes": ["MotivationPush"]
+}
 
-Returns:
-- saved_feedback
-- llm_output or null
-- updated_roadmap
-- changed_items
-- pushes
-- correction_status if LLM failed
+Response data when LLM failed:
+{
+  "saved_feedback": "RoadmapFeedback",
+  "llm_output": null,
+  "updated_roadmap": null,
+  "changed_items": [],
+  "pushes": [],
+  "correction_status": "llm_failed",
+  "correction_error": "string"
+}
 
 
 19. POST /api/notifications/send-due
-Sends planned motivation pushes through Telegram.
-For testing use dry_run = true.
+------------------------------------
+Logic:
+- Gets due planned MotivationPush rows.
+- Applies user notification settings.
+- If dry_run=true, does not send Telegram messages.
+- If dry_run=false, TELEGRAM_BOT_TOKEN is required.
 
 Body:
 {
   "telegram_id": 123,
   "limit": 20,
   "dry_run": true,
-  "current_datetime": "2026-06-30T12:00:00+00:00"
+  "current_datetime": "ISO datetime|null"
 }
 
-Returns:
-- dry_run
-- requested_telegram_id
-- processed
-- results
+Response data:
+{
+  "dry_run": true,
+  "requested_telegram_id": 123,
+  "processed": 0,
+  "results": [
+    {
+      "push_id": "uuid",
+      "telegram_id": 123,
+      "action": "would_send|sent|failed|cancelled|skipped_by_quiet_hours|rate_limited",
+      "reason": "push_disabled, only for cancelled",
+      "message_text": "string, only for dry_run would_send",
+      "button_text": "string|null, only for dry_run would_send",
+      "sent_today": 3,
+      "max_pushes_per_day": 3,
+      "error": "string, only for failed",
+      "telegram_response": "object, only for sent"
+    }
+  ]
+}
 
-If dry_run is false, TELEGRAM_BOT_TOKEN must be set.
 
-
-Minimal happy path
-==================
+Minimal frontend flow
+=====================
 
 1. POST /api/profile/analyze
-Message: "Я хочу стать Python разработчиком"
+Use user free text. Read:
+- data.user_profile
+- data.llm_output.Need_question OR data.fallback_output.Need_question
+- data.llm_output.Next_question OR data.fallback_output.Next_question
 
-2. PATCH /api/profile/{telegram_id}
-Fill missing fields like target_role, current_level, time_per_week_value.
+2. If Need_question=true, ask the returned Next_question in UI.
 
-3. POST /api/roadmap/generate
-Creates roadmap, items and motivation pushes.
+3. PATCH /api/profile/{telegram_id}
+Send button answers or manual edits.
 
-4. GET /api/profile/{telegram_id}/roadmap/current
-Shows current roadmap with progress.
+4. POST /api/roadmap/generate
+Read:
+- data.created.roadmap
+- data.created.items
+- data.created.pushes
 
-5. GET /api/roadmap/{roadmap_id}/items
-Shows all steps.
+5. GET /api/profile/{telegram_id}/state
+Use this as the main screen payload.
 
-6. POST /api/roadmap/item/{item_id}/start
-Starts first step.
-
-7. GET /api/roadmap/{roadmap_id}/item/{item_id}/test
-Gets mini-test/check.
-
-8. POST /api/roadmap/item/complete
-Completes step and updates XP.
-
+6. GET /api/roadmap/{roadmap_id}/item/{item_id}/test
+Use this for the item completion/test screen.
