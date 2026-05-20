@@ -33,6 +33,7 @@ from app.repository import (
 from app.schemas import (
     AnalyzeProfileRequest,
     ApiResponse,
+    CompleteRoadmapItemRequest,
     GenerateRoadmapRequest,
     RoadmapFeedbackRequest,
     SendNotificationsRequest,
