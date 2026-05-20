@@ -40,6 +40,153 @@ def _dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _norm_text(value: Any) -> str:
+    return str(value or "").strip().lower().replace("ё", "е")
+
+
+def _normalize_enum(value: Any, *, allowed: set[str], fallback: str | None, aliases: dict[str, str] | None = None) -> str | None:
+    if value is None:
+        return fallback
+
+    normalized = _norm_text(value)
+    if normalized in allowed:
+        return normalized
+
+    aliases = aliases or {}
+    for marker, target in aliases.items():
+        if marker in normalized:
+            return target
+
+    return fallback
+
+
+def _normalize_current_level(value: Any) -> str | None:
+    return _normalize_enum(
+        value,
+        allowed={"beginner", "basic", "professional"},
+        fallback=None,
+        aliases={
+            "начина": "beginner",
+            "нович": "beginner",
+            "нулев": "beginner",
+            "базов": "basic",
+            "основ": "basic",
+            "средн": "basic",
+            "проф": "professional",
+            "продвин": "professional",
+            "advanced": "professional",
+        },
+    )
+
+
+def _normalize_source_type(value: Any) -> str:
+    return _normalize_enum(
+        value,
+        allowed={"video", "text", "practice", "course", "lecture", "article", "collection", "project"},
+        fallback="text",
+        aliases={
+            "видео": "video",
+            "стат": "article",
+            "практи": "practice",
+            "задач": "practice",
+            "курс": "course",
+            "лекц": "lecture",
+            "подбор": "collection",
+            "проект": "project",
+        },
+    ) or "text"
+
+
+def _normalize_difficulty(value: Any) -> str | None:
+    return _normalize_enum(
+        value,
+        allowed={"beginner", "basic", "intermediate", "advanced"},
+        fallback=None,
+        aliases={
+            "начина": "beginner",
+            "нович": "beginner",
+            "базов": "basic",
+            "основ": "basic",
+            "средн": "intermediate",
+            "продвин": "advanced",
+            "слож": "advanced",
+        },
+    )
+
+
+def _normalize_completion_type(value: Any) -> str:
+    return _normalize_enum(
+        value,
+        allowed={"self_check", "quiz", "practice", "note", "project", "manual"},
+        fallback="self_check",
+        aliases={
+            "самопровер": "self_check",
+            "тест": "quiz",
+            "quiz": "quiz",
+            "практи": "practice",
+            "консп": "note",
+            "замет": "note",
+            "проект": "project",
+            "ручн": "manual",
+        },
+    ) or "self_check"
+
+
+def _normalize_roadmap_status(value: Any) -> str:
+    return _normalize_enum(
+        value,
+        allowed={"draft", "active", "paused", "completed", "replaced", "archived"},
+        fallback="active",
+    ) or "active"
+
+
+def _normalize_item_status(value: Any) -> str:
+    return _normalize_enum(
+        value,
+        allowed={"not_started", "in_progress", "pending_check", "completed", "completed_late", "expired", "skipped", "replaced"},
+        fallback="not_started",
+    ) or "not_started"
+
+
+def _normalize_push_type(value: Any) -> str:
+    return _normalize_enum(
+        value,
+        allowed={"deadline_warning", "deadline_expired", "streak_risk", "xp_opportunity", "return_to_route", "test_required"},
+        fallback="return_to_route",
+        aliases={
+            "deadline": "deadline_warning",
+            "дедлайн": "deadline_warning",
+            "streak": "streak_risk",
+            "стрик": "streak_risk",
+            "xp": "xp_opportunity",
+            "тест": "test_required",
+        },
+    ) or "return_to_route"
+
+
+def _normalize_push_tone(value: Any) -> str:
+    return _normalize_enum(
+        value,
+        allowed={"soft", "neutral", "duolingo_aggressive"},
+        fallback="duolingo_aggressive",
+        aliases={
+            "мяг": "soft",
+            "нейтр": "neutral",
+            "aggressive": "duolingo_aggressive",
+            "duolingo": "duolingo_aggressive",
+            "дерз": "duolingo_aggressive",
+        },
+    ) or "duolingo_aggressive"
+
+
+def _normalize_push_status(value: Any) -> str:
+    return _normalize_enum(
+        value,
+        allowed={"planned", "sent", "cancelled", "failed", "skipped_by_quiet_hours", "rate_limited"},
+        fallback="planned",
+    ) or "planned"
+
+
 async def upsert_user_profile(
     session: AsyncSession,
     *,
@@ -125,13 +272,18 @@ async def list_roadmaps_for_profile(
     status: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
+    status_filter = "AND status = :status" if status is not None else ""
+    values: dict[str, Any] = {"profile_id": profile_id, "limit": limit}
+    if status is not None:
+        values["status"] = status
+
     result = await session.execute(
         text(
-            """
+            f"""
             SELECT *
             FROM roadmap
             WHERE profile_id = :profile_id
-              AND (:status IS NULL OR status = :status)
+              {status_filter}
             ORDER BY
                 CASE status
                     WHEN 'active' THEN 0
@@ -145,7 +297,7 @@ async def list_roadmaps_for_profile(
             LIMIT :limit
             """
         ),
-        {"profile_id": profile_id, "status": status, "limit": limit},
+        values,
     )
     return [dict(row) for row in result.mappings().all()]
 
@@ -490,6 +642,12 @@ async def update_user_profile(
             if column in {"preference_json", "notification_settings_json", "profile_json"}:
                 assignments.append(f"{column} = CAST(:{column} AS JSONB)")
                 values[column] = _json(update[source_key])
+            elif column == "current_level":
+                level = _normalize_current_level(update[source_key])
+                if level is None:
+                    continue
+                assignments.append(f"{column} = :{column}")
+                values[column] = level
             else:
                 assignments.append(f"{column} = :{column}")
                 values[column] = update[source_key]
@@ -625,7 +783,7 @@ async def insert_roadmap_bundle(
             "estimated_duration_weeks": roadmap.get("Estimated_duration_weeks"),
             "hours_per_week_label": roadmap.get("Hours_per_week_label"),
             "route_logic": roadmap.get("Route_logic"),
-            "status": roadmap.get("Status") or "active",
+            "status": _normalize_roadmap_status(roadmap.get("Status")),
             "version": roadmap.get("Version") or 1,
             "roadmap_json": _json(roadmap.get("Roadmap_json") or {}),
         },
@@ -673,11 +831,11 @@ async def insert_roadmap_bundle(
                 "name": item.get("Name") or "Шаг маршрута",
                 "description": item.get("Description"),
                 "resources": item.get("Resources"),
-                "source_type": item.get("Source_type") or "text",
+                "source_type": _normalize_source_type(item.get("Source_type")),
                 "source_name": item.get("Source_name"),
                 "is_free": item.get("Is_free", True),
                 "language": item.get("Language") or "ru",
-                "difficulty": item.get("Difficulty"),
+                "difficulty": _normalize_difficulty(item.get("Difficulty")),
                 "duration_minutes": item.get("Duration_minutes"),
                 "estimated_hours": item.get("Estimated_hours"),
                 "why_this_material": item.get("Why_this_material"),
@@ -685,7 +843,7 @@ async def insert_roadmap_bundle(
                 "career_value": item.get("Career_value"),
                 "practice_task": item.get("Practice_task"),
                 "self_check_questions": _json_array(item.get("Self_check_questions") or []),
-                "completion_check_type": item.get("Completion_check_type") or "self_check",
+                "completion_check_type": _normalize_completion_type(item.get("Completion_check_type")),
                 "completion_check_json": _json(item.get("Completion_check_json") or {}),
                 "min_seconds_before_complete": item.get("Min_seconds_before_complete") or 0,
                 "issued_at": _dt(item.get("Issued_at")) or datetime.now(UTC),
@@ -697,7 +855,7 @@ async def insert_roadmap_bundle(
                 "xp_policy_json": _json(item.get("Xp_policy_json") or {}),
                 "fraud_score": item.get("Fraud_score") or 0,
                 "streak_multiplier": item.get("Streak_multiplier") or 1.0,
-                "status": item.get("Status") or "not_started",
+                "status": _normalize_item_status(item.get("Status")),
                 "user_note": item.get("User_note"),
                 "completed_at": _dt(item.get("Completed_at")),
                 "item_json": _json(item.get("Item_json") or {}),
@@ -724,13 +882,13 @@ async def insert_roadmap_bundle(
             {
                 "profile_id": profile_id,
                 "roadmap_id": roadmap_id,
-                "push_type": push.get("Push_type") or "return_to_route",
-                "tone": push.get("Tone") or "duolingo_aggressive",
+                "push_type": _normalize_push_type(push.get("Push_type")),
+                "tone": _normalize_push_tone(push.get("Tone")),
                 "message_text": push.get("Message_text") or "Вернись к маршруту и закрой один шаг.",
                 "button_text": push.get("Button_text"),
                 "button_payload": _json(push.get("Button_payload") or {}),
                 "scheduled_at": _dt(push.get("Scheduled_at")) or datetime.now(UTC),
-                "status": push.get("Status") or "planned",
+                "status": _normalize_push_status(push.get("Status")),
             },
         )
         inserted_pushes.append(dict(push_result.mappings().one()))
@@ -862,6 +1020,18 @@ async def update_roadmap_items_after_correction(
             elif column in datetime_columns:
                 assignments.append(f"{column} = :{column}")
                 values[column] = _dt(value)
+            elif column == "source_type":
+                assignments.append(f"{column} = :{column}")
+                values[column] = _normalize_source_type(value)
+            elif column == "difficulty":
+                assignments.append(f"{column} = :{column}")
+                values[column] = _normalize_difficulty(value)
+            elif column == "completion_check_type":
+                assignments.append(f"{column} = :{column}")
+                values[column] = _normalize_completion_type(value)
+            elif column == "status":
+                assignments.append(f"{column} = :{column}")
+                values[column] = _normalize_item_status(value)
             else:
                 assignments.append(f"{column} = :{column}")
                 values[column] = value
@@ -916,13 +1086,13 @@ async def insert_motivation_pushes(
             {
                 "profile_id": profile_id,
                 "roadmap_id": roadmap_id,
-                "push_type": push.get("Push_type") or "return_to_route",
-                "tone": push.get("Tone") or "duolingo_aggressive",
+                "push_type": _normalize_push_type(push.get("Push_type")),
+                "tone": _normalize_push_tone(push.get("Tone")),
                 "message_text": push.get("Message_text") or "Маршрут обновлен. Проверь новый шаг.",
                 "button_text": push.get("Button_text"),
                 "button_payload": _json(push.get("Button_payload") or {}),
                 "scheduled_at": _dt(push.get("Scheduled_at")) or datetime.now(UTC),
-                "status": push.get("Status") or "planned",
+                "status": _normalize_push_status(push.get("Status")),
             },
         )
         inserted_pushes.append(dict(push_result.mappings().one()))
@@ -938,9 +1108,14 @@ async def get_due_motivation_pushes(
     limit: int,
     telegram_id: int | None = None,
 ) -> list[dict[str, Any]]:
+    telegram_filter = "AND up.telegram_id = :telegram_id" if telegram_id is not None else ""
+    values: dict[str, Any] = {"now": now, "limit": limit}
+    if telegram_id is not None:
+        values["telegram_id"] = telegram_id
+
     result = await session.execute(
         text(
-            """
+            f"""
             SELECT
                 mp.*,
                 up.telegram_id,
@@ -949,12 +1124,12 @@ async def get_due_motivation_pushes(
             JOIN user_profile up ON up.user_id = mp.profile_id
             WHERE mp.status = 'planned'
               AND mp.scheduled_at <= :now
-              AND (:telegram_id IS NULL OR up.telegram_id = :telegram_id)
+              {telegram_filter}
             ORDER BY mp.scheduled_at ASC
             LIMIT :limit
             """
         ),
-        {"now": now, "limit": limit, "telegram_id": telegram_id},
+        values,
     )
     return [dict(row) for row in result.mappings().all()]
 

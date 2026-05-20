@@ -147,6 +147,12 @@ async def analyze_profile(
         timeout_seconds=settings.llm_timeout_seconds,
         use_local=settings.use_local_llm,
         local_model_name=settings.local_llm_model,
+        provider=settings.llm_provider,
+        api_base_url=settings.llm_api_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        temperature=settings.llm_temperature,
+        json_mode=settings.llm_json_mode,
     )
     try:
         llm_output = await llm_client.run_prompt(
@@ -198,7 +204,8 @@ async def get_profile(
     profile = await get_user_profile(session, telegram_id=telegram_id)
     if not profile:
         raise HTTPException(status_code=404, detail="USER_PROFILE not found")
-    return ApiResponse(data={"user_profile": _jsonable(profile)})
+    profile_payload = _jsonable(profile)
+    return ApiResponse(data={"profile": profile_payload, "user_profile": profile_payload})
 
 
 @app.patch("/api/profile/{telegram_id}", response_model=ApiResponse)
@@ -228,10 +235,13 @@ async def get_profile_state(
     if not roadmap:
         return ApiResponse(
             data={
+                "profile": _jsonable(profile),
+                "roadmap": None,
+                "items": [],
+                "progress": None,
                 "user_profile": _jsonable(profile),
                 "current_roadmap": None,
                 "roadmap_items": [],
-                "progress": None,
             }
         )
 
@@ -244,10 +254,13 @@ async def get_profile_state(
     )
     return ApiResponse(
         data={
+            "profile": _jsonable(profile),
+            "roadmap": _jsonable(roadmap),
+            "items": _jsonable(items),
+            "progress": _jsonable(progress),
             "user_profile": _jsonable(profile),
             "current_roadmap": _jsonable(roadmap),
             "roadmap_items": _jsonable(items),
-            "progress": _jsonable(progress),
         }
     )
 
@@ -269,7 +282,14 @@ async def get_profile_roadmaps(
         status=status,
         limit=_bounded_limit(limit),
     )
-    return ApiResponse(data={"roadmaps": _jsonable(roadmaps)})
+    return ApiResponse(
+        data={
+            "profile": _jsonable(profile),
+            "roadmaps": _jsonable(roadmaps),
+            "count": len(roadmaps),
+            "status_filter": status,
+        }
+    )
 
 
 @app.get("/api/profile/{telegram_id}/roadmap/current", response_model=ApiResponse)
@@ -290,10 +310,13 @@ async def get_current_roadmap(
         roadmap_id=str(roadmap["roadmap_id"]),
         profile_id=str(profile["user_id"]),
     )
+    items = await get_roadmap_items(session, roadmap_id=str(roadmap["roadmap_id"]))
     return ApiResponse(
         data={
             "roadmap": _jsonable(roadmap),
+            "items": _jsonable(items),
             "progress": _jsonable(progress),
+            "roadmap_items": _jsonable(items),
         }
     )
 
@@ -311,9 +334,11 @@ async def get_profile_progress(
     if not roadmap:
         return ApiResponse(
             data={
+                "profile": _jsonable(profile),
+                "roadmap": None,
+                "progress": None,
                 "user_profile": _jsonable(profile),
                 "current_roadmap": None,
-                "progress": None,
             }
         )
 
@@ -324,9 +349,11 @@ async def get_profile_progress(
     )
     return ApiResponse(
         data={
+            "profile": _jsonable(profile),
+            "roadmap": _jsonable(roadmap),
+            "progress": _jsonable(progress),
             "user_profile": _jsonable(profile),
             "current_roadmap": _jsonable(roadmap),
-            "progress": _jsonable(progress),
         }
     )
 
@@ -339,7 +366,23 @@ async def get_roadmap(
     roadmap = await get_roadmap_by_id(session, roadmap_id=roadmap_id)
     if not roadmap:
         raise HTTPException(status_code=404, detail="ROADMAP not found")
-    return ApiResponse(data={"roadmap": _jsonable(roadmap)})
+    items = await get_roadmap_items(session, roadmap_id=roadmap_id)
+    progress = await get_roadmap_progress(
+        session,
+        roadmap_id=roadmap_id,
+        profile_id=str(roadmap["profile_id"]),
+    )
+    feedback = await get_roadmap_feedback(session, roadmap_id=roadmap_id)
+    return ApiResponse(
+        data={
+            "roadmap": _jsonable(roadmap),
+            "items": _jsonable(items),
+            "progress": _jsonable(progress),
+            "feedback": _jsonable(feedback),
+            "roadmap_items": _jsonable(items),
+            "roadmap_feedback": _jsonable(feedback),
+        }
+    )
 
 
 @app.patch("/api/roadmap/{roadmap_id}/status", response_model=ApiResponse)
@@ -365,8 +408,19 @@ async def get_roadmap_items_endpoint(
     roadmap_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse:
+    roadmap = await get_roadmap_by_id(session, roadmap_id=roadmap_id)
+    if not roadmap:
+        raise HTTPException(status_code=404, detail="ROADMAP not found")
+
     items = await get_roadmap_items(session, roadmap_id=roadmap_id)
-    return ApiResponse(data={"roadmap_items": _jsonable(items)})
+    return ApiResponse(
+        data={
+            "roadmap": _jsonable(roadmap),
+            "items": _jsonable(items),
+            "count": len(items),
+            "roadmap_items": _jsonable(items),
+        }
+    )
 
 
 @app.get("/api/roadmap/{roadmap_id}/feedback", response_model=ApiResponse)
@@ -375,12 +429,23 @@ async def get_roadmap_feedback_endpoint(
     limit: int = 30,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse:
+    roadmap = await get_roadmap_by_id(session, roadmap_id=roadmap_id)
+    if not roadmap:
+        raise HTTPException(status_code=404, detail="ROADMAP not found")
+
     feedback = await get_roadmap_feedback(
         session,
         roadmap_id=roadmap_id,
         limit=_bounded_limit(limit, default=30),
     )
-    return ApiResponse(data={"roadmap_feedback": _jsonable(feedback)})
+    return ApiResponse(
+        data={
+            "roadmap": _jsonable(roadmap),
+            "feedback": _jsonable(feedback),
+            "count": len(feedback),
+            "roadmap_feedback": _jsonable(feedback),
+        }
+    )
 
 
 @app.get("/api/roadmap/{roadmap_id}/item/{item_id}/test", response_model=ApiResponse)
@@ -529,6 +594,12 @@ async def generate_roadmap(
         timeout_seconds=settings.llm_timeout_seconds,
         use_local=settings.use_local_llm,
         local_model_name=settings.local_llm_model,
+        provider=settings.llm_provider,
+        api_base_url=settings.llm_api_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        temperature=settings.llm_temperature,
+        json_mode=settings.llm_json_mode,
     )
     try:
         llm_output = await llm_client.run_prompt(
@@ -647,6 +718,12 @@ async def correct_roadmap_by_feedback(
         timeout_seconds=settings.llm_timeout_seconds,
         use_local=settings.use_local_llm,
         local_model_name=settings.local_llm_model,
+        provider=settings.llm_provider,
+        api_base_url=settings.llm_api_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        temperature=settings.llm_temperature,
+        json_mode=settings.llm_json_mode,
     )
     try:
         llm_output = await llm_client.run_prompt(

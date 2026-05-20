@@ -29,6 +29,12 @@ services:
     container_name: progressors_backend
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-progressors}:${POSTGRES_PASSWORD:-progressors}@postgres:5432/${POSTGRES_DB:-progressors}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai_compatible}
+      LLM_API_BASE_URL: ${LLM_API_BASE_URL:-https://api.groq.com/openai/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-meta-llama/llama-4-scout-17b-16e-instruct}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
+      LLM_JSON_MODE: ${LLM_JSON_MODE:-true}
       USE_LOCAL_LLM: ${USE_LOCAL_LLM:-false}
       LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}
       API_LLM: ${API_LLM:-http://host.docker.internal:8080/dump}

@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS user_profile (
     ),
 
     time_per_week_label TEXT,
-    time_per_week_value INT,
+    time_per_week_value INT CHECK (
+        time_per_week_value IS NULL OR time_per_week_value >= 0
+    ),
 
     preferred_formats TEXT[] DEFAULT '{}'::TEXT[],
     wishes TEXT,
@@ -55,8 +57,8 @@ CREATE TABLE IF NOT EXISTS user_profile (
         "allow_roast": true
     }'::JSONB,
 
-    global_xp INT NOT NULL DEFAULT 0,
-    streak_days INT NOT NULL DEFAULT 0,
+    global_xp INT NOT NULL DEFAULT 0 CHECK (global_xp >= 0),
+    streak_days INT NOT NULL DEFAULT 0 CHECK (streak_days >= 0),
     streak_multiplier NUMERIC(4, 2) NOT NULL DEFAULT 1.0,
     last_activity DATE,
 
@@ -82,7 +84,9 @@ CREATE TABLE IF NOT EXISTS roadmap (
     target_role TEXT,
     level TEXT,
 
-    estimated_duration_weeks INT,
+    estimated_duration_weeks INT CHECK (
+        estimated_duration_weeks IS NULL OR estimated_duration_weeks > 0
+    ),
     hours_per_week_label TEXT,
     route_logic TEXT,
 
@@ -98,6 +102,7 @@ CREATE TABLE IF NOT EXISTS roadmap (
 );
 
 CREATE INDEX IF NOT EXISTS idx_roadmap_profile_status ON roadmap (profile_id, status);
+CREATE INDEX IF NOT EXISTS idx_roadmap_profile_updated ON roadmap (profile_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_roadmap_target_role ON roadmap (target_role);
 
 CREATE TABLE IF NOT EXISTS roadmap_item (
@@ -124,8 +129,12 @@ CREATE TABLE IF NOT EXISTS roadmap_item (
         difficulty IN ('beginner', 'basic', 'intermediate', 'advanced')
     ),
 
-    duration_minutes INT,
-    estimated_hours NUMERIC(5, 2),
+    duration_minutes INT CHECK (
+        duration_minutes IS NULL OR duration_minutes >= 0
+    ),
+    estimated_hours NUMERIC(5, 2) CHECK (
+        estimated_hours IS NULL OR estimated_hours >= 0
+    ),
 
     why_this_material TEXT,
     skill_result TEXT,
@@ -136,18 +145,18 @@ CREATE TABLE IF NOT EXISTS roadmap_item (
         completion_check_type IN ('self_check', 'quiz', 'practice', 'note', 'project', 'manual')
     ),
     completion_check_json JSONB NOT NULL DEFAULT '{}'::JSONB,
-    min_seconds_before_complete INT NOT NULL DEFAULT 0,
+    min_seconds_before_complete INT NOT NULL DEFAULT 0 CHECK (min_seconds_before_complete >= 0),
 
     issued_at TIMESTAMPTZ DEFAULT now(),
     recommended_deadline_at TIMESTAMPTZ,
     deadline_at TIMESTAMPTZ,
 
-    xp INT NOT NULL DEFAULT 0,
-    pending_xp INT NOT NULL DEFAULT 0,
-    verified_xp INT NOT NULL DEFAULT 0,
+    xp INT NOT NULL DEFAULT 0 CHECK (xp >= 0),
+    pending_xp INT NOT NULL DEFAULT 0 CHECK (pending_xp >= 0),
+    verified_xp INT NOT NULL DEFAULT 0 CHECK (verified_xp >= 0),
     xp_policy_json JSONB NOT NULL DEFAULT '{}'::JSONB,
-    fraud_score NUMERIC(5, 2) NOT NULL DEFAULT 0,
-    streak_multiplier NUMERIC(4, 2) NOT NULL DEFAULT 1.0,
+    fraud_score NUMERIC(5, 2) NOT NULL DEFAULT 0 CHECK (fraud_score >= 0),
+    streak_multiplier NUMERIC(4, 2) NOT NULL DEFAULT 1.0 CHECK (streak_multiplier >= 0),
 
     status TEXT NOT NULL DEFAULT 'not_started' CHECK (
         status IN ('not_started', 'in_progress', 'pending_check', 'completed', 'completed_late', 'expired', 'skipped', 'replaced')
@@ -164,7 +173,9 @@ CREATE TABLE IF NOT EXISTS roadmap_item (
 );
 
 CREATE INDEX IF NOT EXISTS idx_roadmap_item_roadmap_order ON roadmap_item (roadmap_id, step_order);
+CREATE INDEX IF NOT EXISTS idx_roadmap_item_roadmap_status_order ON roadmap_item (roadmap_id, status, step_order);
 CREATE INDEX IF NOT EXISTS idx_roadmap_item_profile_status ON roadmap_item (profile_id, status);
+CREATE INDEX IF NOT EXISTS idx_roadmap_item_profile_roadmap_order ON roadmap_item (profile_id, roadmap_id, step_order);
 CREATE INDEX IF NOT EXISTS idx_roadmap_item_deadline ON roadmap_item (deadline_at);
 
 CREATE TABLE IF NOT EXISTS roadmap_feedback (
@@ -182,6 +193,7 @@ CREATE TABLE IF NOT EXISTS roadmap_feedback (
 );
 
 CREATE INDEX IF NOT EXISTS idx_roadmap_feedback_profile ON roadmap_feedback (profile_id);
+CREATE INDEX IF NOT EXISTS idx_roadmap_feedback_roadmap_created ON roadmap_feedback (roadmap_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_roadmap_feedback_item ON roadmap_feedback (item_id);
 CREATE INDEX IF NOT EXISTS idx_roadmap_feedback_type ON roadmap_feedback (feedback_type);
 
@@ -206,6 +218,7 @@ CREATE TABLE IF NOT EXISTS llm_run (
 );
 
 CREATE INDEX IF NOT EXISTS idx_llm_run_profile ON llm_run (profile_id);
+CREATE INDEX IF NOT EXISTS idx_llm_run_created ON llm_run (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_llm_run_prompt_name ON llm_run (prompt_name);
 
 CREATE TABLE IF NOT EXISTS top_users (
@@ -266,4 +279,5 @@ CREATE TABLE IF NOT EXISTS motivation_push (
 
 CREATE INDEX IF NOT EXISTS idx_motivation_push_schedule ON motivation_push (status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_motivation_push_profile ON motivation_push (profile_id);
+CREATE INDEX IF NOT EXISTS idx_motivation_push_roadmap_schedule ON motivation_push (roadmap_id, status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_motivation_push_item ON motivation_push (item_id);
