@@ -32,6 +32,23 @@ class RoadmapFeedbackRequest(BaseModel):
     current_datetime: datetime | None = None
 
 
+class CompleteRoadmapItemRequest(BaseModel):
+    telegram_id: int
+    item_id: str
+    spent_seconds: int = Field(default=0, ge=0)
+    answers: list[dict[str, Any]] | dict[str, Any] = Field(default_factory=list)
+    note_text: str | None = None
+    practice_result: str | None = None
+    current_datetime: datetime | None = None
+
+
+class SendNotificationsRequest(BaseModel):
+    telegram_id: int | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+    dry_run: bool = False
+    current_datetime: datetime | None = None
+
+
 class ApiResponse(BaseModel):
     ok: bool = True
     data: dict[str, Any]

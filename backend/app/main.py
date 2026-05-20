@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -10,6 +11,8 @@ from app.db import get_session
 from app.llm_client import LlmClient
 from app.prompts import load_prompt, render_prompt
 from app.repository import (
+    count_sent_pushes_today,
+    get_due_motivation_pushes,
     get_roadmap_feedback,
     get_roadmap_for_profile,
     get_roadmap_items,
@@ -18,12 +21,20 @@ from app.repository import (
     insert_motivation_pushes,
     insert_roadmap_bundle,
     insert_roadmap_feedback,
+    mark_motivation_push_status,
     update_roadmap_after_correction,
     update_roadmap_items_after_correction,
     update_user_profile,
     upsert_user_profile,
 )
-from app.schemas import AnalyzeProfileRequest, ApiResponse, GenerateRoadmapRequest, RoadmapFeedbackRequest
+from app.schemas import (
+    AnalyzeProfileRequest,
+    ApiResponse,
+    GenerateRoadmapRequest,
+    RoadmapFeedbackRequest,
+    SendNotificationsRequest,
+)
+from app.telegram_client import TelegramClient
 
 
 app = FastAPI(title="Progressors Learning Backend")
@@ -35,6 +46,46 @@ def _jsonable(data: Any) -> Any:
 
 def _settings():
     return get_settings()
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _parse_hhmm(value: str, fallback: time) -> time:
+    try:
+        hour, minute = value.split(":", 1)
+        return time(hour=int(hour), minute=int(minute))
+    except (ValueError, AttributeError):
+        return fallback
+
+
+def _is_quiet_time(now: datetime, settings: dict[str, Any]) -> bool:
+    quiet = settings.get("quiet_hours") or {}
+    if not quiet.get("enabled", True):
+        return False
+
+    start = _parse_hhmm(quiet.get("start", "22:00"), time(22, 0))
+    end = _parse_hhmm(quiet.get("end", "09:00"), time(9, 0))
+    current = now.time()
+
+    if start <= end:
+        return start <= current < end
+    return current >= start or current < end
 
 
 @app.get("/health")
@@ -293,5 +344,161 @@ async def correct_roadmap_by_feedback(
             "updated_roadmap": _jsonable(roadmap_update),
             "changed_items": _jsonable(changed_items),
             "pushes": _jsonable(pushes),
+        }
+    )
+
+
+@app.post("/api/notifications/send-due", response_model=ApiResponse)
+async def send_due_notifications(
+    request: SendNotificationsRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    settings = _settings()
+    now = _as_utc(request.current_datetime or datetime.now(UTC))
+
+    if not request.dry_run and not settings.telegram_bot_token:
+        raise HTTPException(status_code=400, detail="TELEGRAM_BOT_TOKEN is required to send notifications")
+
+    pushes = await get_due_motivation_pushes(
+        session,
+        now=now,
+        limit=request.limit,
+        telegram_id=request.telegram_id,
+    )
+
+    telegram = None
+    if not request.dry_run and settings.telegram_bot_token:
+        telegram = TelegramClient(
+            bot_token=settings.telegram_bot_token,
+            api_base=settings.telegram_api_base,
+        )
+
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    results: list[dict[str, Any]] = []
+
+    for push in pushes:
+        profile_id = str(push["profile_id"])
+        notification_settings = _as_dict(push.get("notification_settings_json"))
+
+        if not notification_settings.get("push_enabled", True):
+            if not request.dry_run:
+                await mark_motivation_push_status(
+                    session,
+                    push_id=str(push["push_id"]),
+                    status="cancelled",
+                    sent_at=None,
+                )
+            results.append(
+                {
+                    "push_id": str(push["push_id"]),
+                    "telegram_id": push["telegram_id"],
+                    "action": "cancelled",
+                    "reason": "push_disabled",
+                }
+            )
+            continue
+
+        if _is_quiet_time(now, notification_settings):
+            if not request.dry_run:
+                await mark_motivation_push_status(
+                    session,
+                    push_id=str(push["push_id"]),
+                    status="skipped_by_quiet_hours",
+                    sent_at=None,
+                )
+            results.append(
+                {
+                    "push_id": str(push["push_id"]),
+                    "telegram_id": push["telegram_id"],
+                    "action": "skipped_by_quiet_hours",
+                }
+            )
+            continue
+
+        max_pushes = int(notification_settings.get("max_pushes_per_day") or 3)
+        sent_today = await count_sent_pushes_today(
+            session,
+            profile_id=profile_id,
+            day_start=day_start,
+            day_end=day_end,
+        )
+        if sent_today >= max_pushes:
+            if not request.dry_run:
+                await mark_motivation_push_status(
+                    session,
+                    push_id=str(push["push_id"]),
+                    status="rate_limited",
+                    sent_at=None,
+                )
+            results.append(
+                {
+                    "push_id": str(push["push_id"]),
+                    "telegram_id": push["telegram_id"],
+                    "action": "rate_limited",
+                    "sent_today": sent_today,
+                    "max_pushes_per_day": max_pushes,
+                }
+            )
+            continue
+
+        if request.dry_run:
+            results.append(
+                {
+                    "push_id": str(push["push_id"]),
+                    "telegram_id": push["telegram_id"],
+                    "action": "would_send",
+                    "message_text": push["message_text"],
+                    "button_text": push.get("button_text"),
+                }
+            )
+            continue
+
+        try:
+            assert telegram is not None
+            telegram_response = await telegram.send_message(
+                chat_id=int(push["telegram_id"]),
+                text=push["message_text"],
+                button_text=push.get("button_text"),
+                button_payload=_as_dict(push.get("button_payload")),
+            )
+        except Exception as exc:
+            await mark_motivation_push_status(
+                session,
+                push_id=str(push["push_id"]),
+                status="failed",
+                sent_at=None,
+            )
+            results.append(
+                {
+                    "push_id": str(push["push_id"]),
+                    "telegram_id": push["telegram_id"],
+                    "action": "failed",
+                    "error": str(exc),
+                }
+            )
+            continue
+
+        await mark_motivation_push_status(
+            session,
+            push_id=str(push["push_id"]),
+            status="sent",
+            sent_at=now,
+        )
+        results.append(
+            {
+                "push_id": str(push["push_id"]),
+                "telegram_id": push["telegram_id"],
+                "action": "sent",
+                "telegram_response": telegram_response,
+            }
+        )
+
+    return ApiResponse(
+        data={
+            "dry_run": request.dry_run,
+            "requested_telegram_id": request.telegram_id,
+            "processed": len(results),
+            "results": results,
         }
     )

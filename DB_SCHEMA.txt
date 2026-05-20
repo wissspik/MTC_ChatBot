@@ -39,7 +39,38 @@ CREATE TABLE USER_PROFILE (
     Time_per_week_value INT,                -- Числовая оценка часов в неделю: 2 / 5 / 9
 
     Preferred_formats TEXT[] DEFAULT '{}',  -- video / practice / article
-    Wishes TEXT,                            -- Пожелания пользователя
+    Wishes TEXT,                            -- Сырой текст пожеланий пользователя
+    Preference_json JSONB NOT NULL DEFAULT '{
+        "collected": false,
+        "hard_rules": [],
+        "soft_rules": [],
+        "blocked_authors": [],
+        "blocked_channels": [],
+        "blocked_sources": [],
+        "preferred_sources": [],
+        "format_weights": {
+            "video": 1.0,
+            "article": 1.0,
+            "practice": 1.0
+        },
+        "max_video_minutes": null,
+        "explanation_style": [],
+        "pace_preference": "normal"
+    }'::jsonb,                              -- Структурированные ограничения и предпочтения
+    Notification_settings_json JSONB NOT NULL DEFAULT '{
+        "push_enabled": true,
+        "motivation_style": "duolingo_aggressive",
+        "quiet_hours": {
+            "enabled": true,
+            "start": "22:00",
+            "end": "09:00"
+        },
+        "max_pushes_per_day": 3,
+        "deadline_pushes": true,
+        "streak_pushes": true,
+        "xp_pushes": true,
+        "allow_roast": true
+    }'::jsonb,                              -- Настройки мотивационных пушей
 
     Global_xp INT NOT NULL DEFAULT 0,
     Streak_days INT NOT NULL DEFAULT 0,
@@ -56,13 +87,32 @@ CREATE TABLE USER_PROFILE (
 CREATE INDEX idx_user_profile_telegram_id ON USER_PROFILE (Telegram_id);
 CREATE INDEX idx_user_profile_dialog_state ON USER_PROFILE (Dialog_state);
 CREATE INDEX idx_user_profile_target_role ON USER_PROFILE (Target_role);
+CREATE INDEX idx_user_profile_preference_json ON USER_PROFILE USING GIN (Preference_json);
+CREATE INDEX idx_user_profile_notification_settings ON USER_PROFILE USING GIN (Notification_settings_json);
 
 
 Почему эта таблица нужна:
 - бот должен помнить пользователя между сообщениями;
 - нужно хранить ответы на вопросы Prompt 1;
+- Wishes хранит исходный текст пожеланий, а Preference_json хранит правила для LLM;
+- Notification_settings_json хранит стиль и лимиты мотивационных пушей;
 - XP/streak нужны для мотивации и интеграции с "Прогрессорами";
 - Profile_json позволяет сохранить полный JSON от LLM без расширения схемы при каждом новом поле.
+
+Как использовать Preference_json:
+- hard_rules: строгие запреты, например не показывать видео или конкретного автора;
+- soft_rules: мягкие предпочтения, например больше практики или короче материалы;
+- blocked_authors / blocked_channels / blocked_sources: черный список материалов;
+- preferred_sources: любимые источники пользователя;
+- format_weights: веса video/article/practice для ранжирования;
+- max_video_minutes: лимит длины видео;
+- explanation_style: желаемый стиль объяснения;
+- pace_preference: normal / short_steps / intensive / relaxed.
+
+Как использовать Notification_settings_json:
+- motivation_style = "duolingo_aggressive" означает дерзкие и настойчивые пуши;
+- пуши не должны оскорблять пользователя, давить на личные темы или нарушать quiet_hours;
+- max_pushes_per_day ограничивает частоту, чтобы мотивация не превращалась в спам.
 
 
 2. ROADMAP
@@ -141,16 +191,25 @@ CREATE TABLE ROADMAP_ITEM (
     Career_value TEXT,                      -- К каким задачам/ролям приближает
     Practice_task TEXT,                     -- Практика после материала
     Self_check_questions JSONB DEFAULT '[]'::jsonb,
+    Completion_check_type TEXT NOT NULL DEFAULT 'self_check' CHECK (
+        Completion_check_type IN ('self_check', 'quiz', 'practice', 'note', 'project', 'manual')
+    ),                                      -- Как подтверждается прохождение
+    Completion_check_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    Min_seconds_before_complete INT NOT NULL DEFAULT 0,
 
     Issued_at TIMESTAMPTZ DEFAULT now(),
     Recommended_deadline_at TIMESTAMPTZ,
     Deadline_at TIMESTAMPTZ,
 
     Xp INT NOT NULL DEFAULT 0,
+    Pending_xp INT NOT NULL DEFAULT 0,       -- XP ожидает проверки
+    Verified_xp INT NOT NULL DEFAULT 0,      -- XP подтверждено тестом/практикой
+    Xp_policy_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    Fraud_score NUMERIC(5, 2) NOT NULL DEFAULT 0,
     Streak_multiplier NUMERIC(4, 2) NOT NULL DEFAULT 1.0,
 
     Status TEXT NOT NULL DEFAULT 'not_started' CHECK (
-        Status IN ('not_started', 'in_progress', 'completed', 'completed_late', 'expired', 'skipped', 'replaced')
+        Status IN ('not_started', 'in_progress', 'pending_check', 'completed', 'completed_late', 'expired', 'skipped', 'replaced')
     ),
 
     User_note TEXT,
@@ -171,6 +230,9 @@ CREATE INDEX idx_roadmap_item_deadline ON ROADMAP_ITEM (Deadline_at);
 Почему эта таблица нужна:
 - маршрут состоит из многих шагов, а не из одной записи;
 - пользователь должен отмечать каждый материал как пройденный;
+- Completion_check_json хранит мини-тест, вопрос самопроверки или критерии практики;
+- Min_seconds_before_complete защищает от мгновенного закрытия материалов;
+- Pending_xp и Verified_xp разделяют "попытку получить XP" и реально подтвержденный XP;
 - дедлайн, XP и статус должны быть у конкретного материала/задания;
 - можно заменить один материал, не пересоздавая весь маршрут.
 
@@ -282,6 +344,49 @@ CREATE INDEX idx_top_users_xp ON TOP_USERS (Period_type, Xp_value DESC);
 - снапшоты username/display_name помогают сохранить корректный вид лидерборда, даже если пользователь поменяет профиль Telegram.
 
 
+7. MOTIVATION_PUSH
+
+Очередь мотивационных уведомлений.
+Нужна для напоминаний о дедлайнах, streak, просроченных материалах и XP. Тон может быть "duolingo_aggressive", но пуши должны соблюдать лимиты и quiet hours.
+
+CREATE TABLE MOTIVATION_PUSH (
+    Push_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    Profile_id UUID NOT NULL REFERENCES USER_PROFILE(User_id) ON DELETE CASCADE,
+    Roadmap_id UUID REFERENCES ROADMAP(Roadmap_id) ON DELETE CASCADE,
+    Item_id UUID REFERENCES ROADMAP_ITEM(Item_id) ON DELETE SET NULL,
+
+    Push_type TEXT NOT NULL CHECK (
+        Push_type IN ('deadline_warning', 'deadline_expired', 'streak_risk', 'xp_opportunity', 'return_to_route', 'test_required')
+    ),
+    Tone TEXT NOT NULL DEFAULT 'duolingo_aggressive' CHECK (
+        Tone IN ('soft', 'neutral', 'duolingo_aggressive')
+    ),
+
+    Message_text TEXT NOT NULL,
+    Button_text TEXT,
+    Button_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+    Scheduled_at TIMESTAMPTZ NOT NULL,
+    Sent_at TIMESTAMPTZ,
+    Status TEXT NOT NULL DEFAULT 'planned' CHECK (
+        Status IN ('planned', 'sent', 'cancelled', 'failed', 'skipped_by_quiet_hours', 'rate_limited')
+    ),
+
+    Created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_motivation_push_schedule ON MOTIVATION_PUSH (Status, Scheduled_at);
+CREATE INDEX idx_motivation_push_profile ON MOTIVATION_PUSH (Profile_id);
+CREATE INDEX idx_motivation_push_item ON MOTIVATION_PUSH (Item_id);
+
+
+Почему эта таблица нужна:
+- пуши должны планироваться, а не отправляться хаотично;
+- можно ограничить частоту уведомлений и не нарушать quiet hours;
+- можно делать агрессивный игровой тон, но оставлять контроль частоты и отключение;
+- пуши помогают удерживать streak, дедлайны и прохождение мини-тестов.
+
+
 Минимум для самого первого прототипа:
 1. USER_PROFILE
 2. ROADMAP
@@ -294,8 +399,9 @@ CREATE INDEX idx_top_users_xp ON TOP_USERS (Period_type, Xp_value DESC);
 4. ROADMAP_FEEDBACK
 5. LLM_RUN
 6. TOP_USERS
+7. MOTIVATION_PUSH
 
 Что НЕ добавляем в MVP:
 - отдельный MATERIALS_CATALOG, потому что LLM с интернет-доступом сама ищет материалы;
-- отдельные таблицы XP-транзакций и достижений, потому что на старте достаточно Global_xp, Streak_days и Xp в ROADMAP_ITEM;
+- отдельные таблицы достижений, потому что на старте достаточно Global_xp, Streak_days, Verified_xp и Xp в ROADMAP_ITEM;
 - отдельную таблицу сообщений диалога, если история пока хранится в FSM/Redis или в Profile_json.

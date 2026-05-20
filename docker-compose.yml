@@ -27,6 +27,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-progressors}:${POSTGRES_PASSWORD:-progressors}@postgres:5432/${POSTGRES_DB:-progressors}
       API_LLM: ${API_LLM:-http://host.docker.internal:8080/dump}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_API_BASE: ${TELEGRAM_API_BASE:-https://api.telegram.org}
       PROMPT_FILE_PATH: /app/INSTUC.txt
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
     ports:

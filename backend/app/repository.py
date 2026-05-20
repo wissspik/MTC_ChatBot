@@ -28,6 +28,18 @@ def _dt(value: Any) -> Any:
     return value
 
 
+def _dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 async def upsert_user_profile(
     session: AsyncSession,
     *,
@@ -615,3 +627,78 @@ async def insert_motivation_pushes(
 
     await session.commit()
     return inserted_pushes
+
+
+async def get_due_motivation_pushes(
+    session: AsyncSession,
+    *,
+    now: datetime,
+    limit: int,
+    telegram_id: int | None = None,
+) -> list[dict[str, Any]]:
+    result = await session.execute(
+        text(
+            """
+            SELECT
+                mp.*,
+                up.telegram_id,
+                up.notification_settings_json
+            FROM motivation_push mp
+            JOIN user_profile up ON up.user_id = mp.profile_id
+            WHERE mp.status = 'planned'
+              AND mp.scheduled_at <= :now
+              AND (:telegram_id IS NULL OR up.telegram_id = :telegram_id)
+            ORDER BY mp.scheduled_at ASC
+            LIMIT :limit
+            """
+        ),
+        {"now": now, "limit": limit, "telegram_id": telegram_id},
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
+async def count_sent_pushes_today(
+    session: AsyncSession,
+    *,
+    profile_id: str,
+    day_start: datetime,
+    day_end: datetime,
+) -> int:
+    result = await session.execute(
+        text(
+            """
+            SELECT count(*) AS count
+            FROM motivation_push
+            WHERE profile_id = :profile_id
+              AND status = 'sent'
+              AND sent_at >= :day_start
+              AND sent_at < :day_end
+            """
+        ),
+        {"profile_id": profile_id, "day_start": day_start, "day_end": day_end},
+    )
+    return int(result.scalar_one())
+
+
+async def mark_motivation_push_status(
+    session: AsyncSession,
+    *,
+    push_id: str,
+    status: str,
+    sent_at: datetime | None = None,
+) -> dict[str, Any]:
+    result = await session.execute(
+        text(
+            """
+            UPDATE motivation_push
+            SET status = :status,
+                sent_at = :sent_at
+            WHERE push_id = :push_id
+            RETURNING *
+            """
+        ),
+        {"push_id": push_id, "status": status, "sent_at": sent_at},
+    )
+    row = dict(result.mappings().one())
+    await session.commit()
+    return row

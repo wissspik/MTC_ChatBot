@@ -20,6 +20,8 @@ Postgres поднимется с таблицами из `backend/db/schema.sql`
 
 ```text
 API_LLM=http://host.docker.internal:8080/dump
+TELEGRAM_BOT_TOKEN=123456:telegram-bot-token
+TELEGRAM_API_BASE=https://api.telegram.org
 POSTGRES_DB=progressors
 POSTGRES_USER=progressors
 POSTGRES_PASSWORD=progressors
@@ -132,3 +134,47 @@ too_easy
 already_completed
 change_request
 ```
+
+## Ручка 4: отправка запланированных уведомлений
+
+```http
+POST /api/notifications/send-due
+```
+
+Отправить due-пуши всем пользователям:
+
+```json
+{
+  "limit": 50
+}
+```
+
+Отправить due-пуши одному пользователю:
+
+```json
+{
+  "telegram_id": 123,
+  "limit": 10
+}
+```
+
+Проверить без реальной отправки:
+
+```json
+{
+  "telegram_id": 123,
+  "dry_run": true
+}
+```
+
+Что делает:
+
+- берет `motivation_push` со статусом `planned` и `scheduled_at <= now`;
+- если указан `telegram_id`, отправляет только этому пользователю;
+- проверяет `push_enabled`;
+- соблюдает `quiet_hours`;
+- соблюдает `max_pushes_per_day`;
+- отправляет сообщение через Telegram Bot API;
+- меняет статус на `sent`, `failed`, `rate_limited`, `skipped_by_quiet_hours` или `cancelled`.
+
+Для реальной отправки нужен `TELEGRAM_BOT_TOKEN`. Для `dry_run` токен не нужен.
