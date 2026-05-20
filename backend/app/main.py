@@ -7,6 +7,12 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.classifier import (
+    build_profile_snapshot,
+    classify_profile_message,
+    get_next_profile_question,
+    merge_profile_updates,
+)
 from app.db import get_session
 from app.llm_client import LlmClient
 from app.prompts import load_prompt, render_prompt
@@ -36,6 +42,7 @@ from app.repository import (
     update_user_profile,
     upsert_user_profile,
 )
+from app.roadmap_templates import build_template_roadmap
 from app.schemas import (
     AnalyzeProfileRequest,
     ApiResponse,
@@ -133,6 +140,7 @@ async def analyze_profile(
         first_name=request.first_name,
         last_name=request.last_name,
     )
+    classifier_output = classify_profile_message(request.user_message)
 
     prompt_template = load_prompt(settings.prompt_file_path, 1)
     variables = {
@@ -161,19 +169,73 @@ async def analyze_profile(
             variables=variables,
         )
     except Exception as exc:
+        classifier_profile_update = classifier_output.get("User_profile_update") or {}
+        profile_update = dict(classifier_profile_update)
+        profile_snapshot = build_profile_snapshot(profile, profile_update)
+        backend_decision = get_next_profile_question(profile_snapshot)
+        profile_update["Dialog_state"] = (
+            "ready_for_roadmap_generation"
+            if backend_decision["Ready_for_roadmap_generation"]
+            else "collecting_profile"
+        )
+        fallback_output = {
+            "Db_target": "USER_PROFILE",
+            "Action": (
+                "ready_for_roadmap"
+                if backend_decision["Ready_for_roadmap_generation"]
+                else "ask_question"
+            ),
+            "Classifier_output": classifier_output,
+            "Backend_decision": backend_decision,
+            "User_profile_update": profile_update,
+            "Need_question": backend_decision["Need_question"],
+            "Next_question": backend_decision["Next_question"],
+            "Ready_for_roadmap_generation": backend_decision["Ready_for_roadmap_generation"],
+            "Fallback_reason": f"LLM request failed: {exc}",
+        }
+        updated_profile = await update_user_profile(
+            session,
+            user_id=str(profile["user_id"]),
+            update=profile_update,
+        )
         await insert_llm_run(
             session,
             profile_id=str(profile["user_id"]),
             roadmap_id=None,
             prompt_name="profile_analysis",
             input_json=variables,
-            output_json=None,
+            output_json=fallback_output,
             status="failed",
             error_text=str(exc),
         )
-        raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}") from exc
+        return ApiResponse(
+            data={
+                "classifier_output": classifier_output,
+                "llm_output": None,
+                "fallback_output": fallback_output,
+                "llm_status": "failed_classifier_fallback",
+                "user_profile": _jsonable(updated_profile),
+            }
+        )
 
-    profile_update = llm_output.get("User_profile_update") or {}
+    llm_profile_update = llm_output.get("User_profile_update") or {}
+    classifier_profile_update = classifier_output.get("User_profile_update") or {}
+    profile_update = merge_profile_updates(llm_profile_update, classifier_profile_update)
+    profile_snapshot = build_profile_snapshot(profile, profile_update)
+    backend_decision = get_next_profile_question(profile_snapshot)
+
+    profile_update["Dialog_state"] = (
+        "ready_for_roadmap_generation"
+        if backend_decision["Ready_for_roadmap_generation"]
+        else "collecting_profile"
+    )
+    llm_output["Classifier_output"] = classifier_output
+    llm_output["Backend_decision"] = backend_decision
+    llm_output["User_profile_update"] = profile_update
+    llm_output["Need_question"] = backend_decision["Need_question"]
+    llm_output["Next_question"] = backend_decision["Next_question"]
+    llm_output["Ready_for_roadmap_generation"] = backend_decision["Ready_for_roadmap_generation"]
+
     updated_profile = await update_user_profile(
         session,
         user_id=str(profile["user_id"]),
@@ -190,6 +252,7 @@ async def analyze_profile(
 
     return ApiResponse(
         data={
+            "classifier_output": classifier_output,
             "llm_output": llm_output,
             "user_profile": _jsonable(updated_profile),
         }
@@ -607,18 +670,12 @@ async def generate_roadmap(
             prompt=prompt,
             variables=variables,
         )
+        generation_status = "ok"
+        generation_error = None
     except Exception as exc:
-        await insert_llm_run(
-            session,
-            profile_id=str(profile["user_id"]),
-            roadmap_id=None,
-            prompt_name="roadmap_generation",
-            input_json=variables,
-            output_json=None,
-            status="failed",
-            error_text=str(exc),
-        )
-        raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}") from exc
+        llm_output = build_template_roadmap(profile, now=current_datetime)
+        generation_status = "llm_failed_template_fallback"
+        generation_error = str(exc)
 
     profile_update = llm_output.get("User_profile_update") or {}
     updated_profile = await update_user_profile(
@@ -641,10 +698,13 @@ async def generate_roadmap(
         prompt_name="roadmap_generation",
         input_json=variables,
         output_json=llm_output,
+        status="failed" if generation_status != "ok" else "success",
+        error_text=generation_error,
     )
 
     return ApiResponse(
         data={
+            "generation_status": generation_status,
             "llm_output": llm_output,
             "user_profile": _jsonable(updated_profile),
             "created": _jsonable(bundle),
