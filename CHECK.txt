@@ -218,7 +218,7 @@ Response:
 ----------------------------
 Logic:
 - Creates or updates UserProfile by telegram_id.
-- Runs local classifier first.
+- Runs local trained classifier first: bootstrapped Naive Bayes + evidence gates.
 - Then tries Gemini/OpenAI-compatible LLM for semantic enrichment.
 - If LLM fails, returns 200 with classifier fallback.
 - Saves extracted fields into USER_PROFILE.
