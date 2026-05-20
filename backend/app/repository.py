@@ -118,6 +118,108 @@ async def get_roadmap_for_profile(
     return dict(row) if row else None
 
 
+async def list_roadmaps_for_profile(
+    session: AsyncSession,
+    *,
+    profile_id: str,
+    status: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    result = await session.execute(
+        text(
+            """
+            SELECT *
+            FROM roadmap
+            WHERE profile_id = :profile_id
+              AND (:status IS NULL OR status = :status)
+            ORDER BY
+                CASE status
+                    WHEN 'active' THEN 0
+                    WHEN 'paused' THEN 1
+                    WHEN 'draft' THEN 2
+                    WHEN 'completed' THEN 3
+                    ELSE 4
+                END,
+                updated_at DESC,
+                created_at DESC
+            LIMIT :limit
+            """
+        ),
+        {"profile_id": profile_id, "status": status, "limit": limit},
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
+async def get_current_roadmap_for_profile(
+    session: AsyncSession,
+    *,
+    profile_id: str,
+) -> dict[str, Any] | None:
+    result = await session.execute(
+        text(
+            """
+            SELECT *
+            FROM roadmap
+            WHERE profile_id = :profile_id
+              AND status IN ('active', 'paused', 'draft')
+            ORDER BY
+                CASE status
+                    WHEN 'active' THEN 0
+                    WHEN 'paused' THEN 1
+                    WHEN 'draft' THEN 2
+                    ELSE 3
+                END,
+                updated_at DESC,
+                created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"profile_id": profile_id},
+    )
+    row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def update_roadmap_status_for_profile(
+    session: AsyncSession,
+    *,
+    profile_id: str,
+    roadmap_id: str,
+    status: str,
+) -> dict[str, Any] | None:
+    if status == "active":
+        await session.execute(
+            text(
+                """
+                UPDATE roadmap
+                SET status = 'paused',
+                    updated_at = now()
+                WHERE profile_id = :profile_id
+                  AND roadmap_id::TEXT <> :roadmap_id
+                  AND status = 'active'
+                """
+            ),
+            {"profile_id": profile_id, "roadmap_id": roadmap_id},
+        )
+
+    result = await session.execute(
+        text(
+            """
+            UPDATE roadmap
+            SET status = :status,
+                updated_at = now()
+            WHERE roadmap_id::TEXT = :roadmap_id
+              AND profile_id = :profile_id
+            RETURNING *
+            """
+        ),
+        {"profile_id": profile_id, "roadmap_id": roadmap_id, "status": status},
+    )
+    row = result.mappings().first()
+    await session.commit()
+    return dict(row) if row else None
+
+
 async def get_roadmap_items(
     session: AsyncSession,
     *,
@@ -176,6 +278,150 @@ async def get_roadmap_item_by_id(
     return dict(row) if row else None
 
 
+async def get_roadmap_progress(
+    session: AsyncSession,
+    *,
+    roadmap_id: str,
+    profile_id: str,
+) -> dict[str, Any]:
+    result = await session.execute(
+        text(
+            """
+            SELECT
+                count(*)::INT AS total_items,
+                count(*) FILTER (
+                    WHERE status IN ('completed', 'completed_late')
+                )::INT AS completed_items,
+                count(*) FILTER (WHERE status = 'in_progress')::INT AS in_progress_items,
+                count(*) FILTER (WHERE status = 'skipped')::INT AS skipped_items,
+                count(*) FILTER (WHERE status = 'not_started')::INT AS not_started_items,
+                COALESCE(sum(xp), 0)::INT AS total_xp,
+                COALESCE(sum(pending_xp), 0)::INT AS earned_xp
+            FROM roadmap_item
+            WHERE roadmap_id::TEXT = :roadmap_id
+              AND profile_id = :profile_id
+            """
+        ),
+        {"roadmap_id": roadmap_id, "profile_id": profile_id},
+    )
+    progress = dict(result.mappings().one())
+    total = progress["total_items"]
+    completed = progress["completed_items"]
+    progress["completion_percent"] = round((completed / total) * 100, 2) if total else 0
+
+    current_result = await session.execute(
+        text(
+            """
+            SELECT *
+            FROM roadmap_item
+            WHERE roadmap_id::TEXT = :roadmap_id
+              AND profile_id = :profile_id
+              AND status = 'in_progress'
+            ORDER BY step_order
+            LIMIT 1
+            """
+        ),
+        {"roadmap_id": roadmap_id, "profile_id": profile_id},
+    )
+    current = current_result.mappings().first()
+
+    next_result = await session.execute(
+        text(
+            """
+            SELECT *
+            FROM roadmap_item
+            WHERE roadmap_id::TEXT = :roadmap_id
+              AND profile_id = :profile_id
+              AND status = 'not_started'
+            ORDER BY step_order
+            LIMIT 1
+            """
+        ),
+        {"roadmap_id": roadmap_id, "profile_id": profile_id},
+    )
+    next_item = next_result.mappings().first()
+
+    progress["current_item"] = dict(current) if current else None
+    progress["next_item"] = dict(next_item) if next_item else None
+    return progress
+
+
+async def start_roadmap_item(
+    session: AsyncSession,
+    *,
+    item_id: str,
+    profile_id: str,
+) -> dict[str, Any] | None:
+    result = await session.execute(
+        text(
+            """
+            UPDATE roadmap_item
+            SET status = 'in_progress',
+                updated_at = now()
+            WHERE item_id::TEXT = :item_id
+              AND profile_id = :profile_id
+              AND status = 'not_started'
+            RETURNING *
+            """
+        ),
+        {"item_id": item_id, "profile_id": profile_id},
+    )
+    row = result.mappings().first()
+    if row:
+        await session.commit()
+        return dict(row)
+
+    existing = await session.execute(
+        text(
+            """
+            SELECT *
+            FROM roadmap_item
+            WHERE item_id::TEXT = :item_id
+              AND profile_id = :profile_id
+            """
+        ),
+        {"item_id": item_id, "profile_id": profile_id},
+    )
+    await session.commit()
+    existing_row = existing.mappings().first()
+    return dict(existing_row) if existing_row else None
+
+
+async def skip_roadmap_item(
+    session: AsyncSession,
+    *,
+    item_id: str,
+    profile_id: str,
+    note_text: str | None,
+    current_datetime: datetime | None = None,
+) -> dict[str, Any] | None:
+    now = current_datetime or datetime.now(UTC)
+    result = await session.execute(
+        text(
+            """
+            UPDATE roadmap_item
+            SET status = 'skipped',
+                user_note = COALESCE(:note_text, user_note),
+                completed_at = :completed_at,
+                updated_at = now()
+            WHERE item_id::TEXT = :item_id
+              AND profile_id = :profile_id
+              AND status NOT IN ('completed', 'completed_late')
+            RETURNING *
+            """
+        ),
+        {
+            "item_id": item_id,
+            "profile_id": profile_id,
+            "note_text": note_text,
+            "completed_at": now,
+        },
+    )
+    row = result.mappings().first()
+    await session.commit()
+    return dict(row) if row else None
+
+
 async def get_roadmap_feedback(
     session: AsyncSession,
     *,
@@ -204,6 +450,23 @@ async def update_user_profile(
     update: dict[str, Any],
 ) -> dict[str, Any]:
     column_map = {
+        "username": "username",
+        "first_name": "first_name",
+        "last_name": "last_name",
+        "goal_text": "goal_text",
+        "direction": "direction",
+        "specific_track": "specific_track",
+        "target_role": "target_role",
+        "goal_reason": "goal_reason",
+        "current_level": "current_level",
+        "time_per_week_label": "time_per_week_label",
+        "time_per_week_value": "time_per_week_value",
+        "preferred_formats": "preferred_formats",
+        "wishes": "wishes",
+        "preference_json": "preference_json",
+        "notification_settings_json": "notification_settings_json",
+        "dialog_state": "dialog_state",
+        "profile_json": "profile_json",
         "Goal_text": "goal_text",
         "Direction": "direction",
         "Specific_track": "specific_track",

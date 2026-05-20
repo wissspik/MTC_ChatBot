@@ -14,19 +14,25 @@ from app.repository import (
     complete_roadmap_item,
     count_sent_pushes_today,
     get_due_motivation_pushes,
+    get_current_roadmap_for_profile,
     get_roadmap_feedback,
     get_roadmap_by_id,
     get_roadmap_item_by_id,
     get_roadmap_for_profile,
     get_roadmap_items,
+    get_roadmap_progress,
     get_user_profile,
     insert_llm_run,
     insert_motivation_pushes,
     insert_roadmap_bundle,
     insert_roadmap_feedback,
+    list_roadmaps_for_profile,
     mark_motivation_push_status,
+    skip_roadmap_item,
+    start_roadmap_item,
     update_roadmap_after_correction,
     update_roadmap_items_after_correction,
+    update_roadmap_status_for_profile,
     update_user_profile,
     upsert_user_profile,
 )
@@ -35,8 +41,12 @@ from app.schemas import (
     ApiResponse,
     CompleteRoadmapItemRequest,
     GenerateRoadmapRequest,
+    ProfileUpdateRequest,
     RoadmapFeedbackRequest,
+    RoadmapStatusRequest,
     SendNotificationsRequest,
+    SkipRoadmapItemRequest,
+    StartRoadmapItemRequest,
 )
 from app.telegram_client import TelegramClient
 
@@ -50,6 +60,19 @@ def _jsonable(data: Any) -> Any:
 
 def _settings():
     return get_settings()
+
+
+async def _profile_or_404(session: AsyncSession, telegram_id: int) -> dict[str, Any]:
+    profile = await get_user_profile(session, telegram_id=telegram_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="USER_PROFILE not found")
+    return profile
+
+
+def _bounded_limit(value: int, *, default: int = 20, maximum: int = 100) -> int:
+    if value < 1:
+        return default
+    return min(value, maximum)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -178,6 +201,136 @@ async def get_profile(
     return ApiResponse(data={"user_profile": _jsonable(profile)})
 
 
+@app.patch("/api/profile/{telegram_id}", response_model=ApiResponse)
+async def patch_profile(
+    telegram_id: int,
+    request: ProfileUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, telegram_id)
+    updated_profile = await update_user_profile(
+        session,
+        user_id=str(profile["user_id"]),
+        update=request.model_dump(exclude_none=True),
+    )
+    return ApiResponse(data={"user_profile": _jsonable(updated_profile)})
+
+
+@app.get("/api/profile/{telegram_id}/state", response_model=ApiResponse)
+async def get_profile_state(
+    telegram_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, telegram_id)
+    profile_id = str(profile["user_id"])
+    roadmap = await get_current_roadmap_for_profile(session, profile_id=profile_id)
+
+    if not roadmap:
+        return ApiResponse(
+            data={
+                "user_profile": _jsonable(profile),
+                "current_roadmap": None,
+                "roadmap_items": [],
+                "progress": None,
+            }
+        )
+
+    roadmap_id = str(roadmap["roadmap_id"])
+    items = await get_roadmap_items(session, roadmap_id=roadmap_id)
+    progress = await get_roadmap_progress(
+        session,
+        roadmap_id=roadmap_id,
+        profile_id=profile_id,
+    )
+    return ApiResponse(
+        data={
+            "user_profile": _jsonable(profile),
+            "current_roadmap": _jsonable(roadmap),
+            "roadmap_items": _jsonable(items),
+            "progress": _jsonable(progress),
+        }
+    )
+
+
+@app.get("/api/profile/{telegram_id}/roadmaps", response_model=ApiResponse)
+async def get_profile_roadmaps(
+    telegram_id: int,
+    status: str | None = None,
+    limit: int = 20,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    if status and status not in {"draft", "active", "paused", "completed", "replaced", "archived"}:
+        raise HTTPException(status_code=400, detail="Invalid roadmap status")
+
+    profile = await _profile_or_404(session, telegram_id)
+    roadmaps = await list_roadmaps_for_profile(
+        session,
+        profile_id=str(profile["user_id"]),
+        status=status,
+        limit=_bounded_limit(limit),
+    )
+    return ApiResponse(data={"roadmaps": _jsonable(roadmaps)})
+
+
+@app.get("/api/profile/{telegram_id}/roadmap/current", response_model=ApiResponse)
+async def get_current_roadmap(
+    telegram_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, telegram_id)
+    roadmap = await get_current_roadmap_for_profile(
+        session,
+        profile_id=str(profile["user_id"]),
+    )
+    if not roadmap:
+        raise HTTPException(status_code=404, detail="ACTIVE_ROADMAP not found")
+
+    progress = await get_roadmap_progress(
+        session,
+        roadmap_id=str(roadmap["roadmap_id"]),
+        profile_id=str(profile["user_id"]),
+    )
+    return ApiResponse(
+        data={
+            "roadmap": _jsonable(roadmap),
+            "progress": _jsonable(progress),
+        }
+    )
+
+
+@app.get("/api/profile/{telegram_id}/progress", response_model=ApiResponse)
+async def get_profile_progress(
+    telegram_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, telegram_id)
+    roadmap = await get_current_roadmap_for_profile(
+        session,
+        profile_id=str(profile["user_id"]),
+    )
+    if not roadmap:
+        return ApiResponse(
+            data={
+                "user_profile": _jsonable(profile),
+                "current_roadmap": None,
+                "progress": None,
+            }
+        )
+
+    progress = await get_roadmap_progress(
+        session,
+        roadmap_id=str(roadmap["roadmap_id"]),
+        profile_id=str(profile["user_id"]),
+    )
+    return ApiResponse(
+        data={
+            "user_profile": _jsonable(profile),
+            "current_roadmap": _jsonable(roadmap),
+            "progress": _jsonable(progress),
+        }
+    )
+
+
 @app.get("/api/roadmap/{roadmap_id}", response_model=ApiResponse)
 async def get_roadmap(
     roadmap_id: str,
@@ -189,6 +342,24 @@ async def get_roadmap(
     return ApiResponse(data={"roadmap": _jsonable(roadmap)})
 
 
+@app.patch("/api/roadmap/{roadmap_id}/status", response_model=ApiResponse)
+async def patch_roadmap_status(
+    roadmap_id: str,
+    request: RoadmapStatusRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, request.telegram_id)
+    roadmap = await update_roadmap_status_for_profile(
+        session,
+        profile_id=str(profile["user_id"]),
+        roadmap_id=roadmap_id,
+        status=request.status,
+    )
+    if not roadmap:
+        raise HTTPException(status_code=404, detail="ROADMAP not found for this user")
+    return ApiResponse(data={"roadmap": _jsonable(roadmap)})
+
+
 @app.get("/api/roadmap/{roadmap_id}/items", response_model=ApiResponse)
 async def get_roadmap_items_endpoint(
     roadmap_id: str,
@@ -196,6 +367,20 @@ async def get_roadmap_items_endpoint(
 ) -> ApiResponse:
     items = await get_roadmap_items(session, roadmap_id=roadmap_id)
     return ApiResponse(data={"roadmap_items": _jsonable(items)})
+
+
+@app.get("/api/roadmap/{roadmap_id}/feedback", response_model=ApiResponse)
+async def get_roadmap_feedback_endpoint(
+    roadmap_id: str,
+    limit: int = 30,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    feedback = await get_roadmap_feedback(
+        session,
+        roadmap_id=roadmap_id,
+        limit=_bounded_limit(limit, default=30),
+    )
+    return ApiResponse(data={"roadmap_feedback": _jsonable(feedback)})
 
 
 @app.get("/api/roadmap/{roadmap_id}/item/{item_id}/test", response_model=ApiResponse)
@@ -226,6 +411,56 @@ async def get_roadmap_item_test(
         "xp_policy_json": item.get("xp_policy_json"),
     }
     return ApiResponse(data={"mini_test": _jsonable(test_payload)})
+
+
+@app.post("/api/roadmap/item/{item_id}/start", response_model=ApiResponse)
+async def start_item(
+    item_id: str,
+    request: StartRoadmapItemRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, request.telegram_id)
+    item = await start_roadmap_item(
+        session,
+        item_id=item_id,
+        profile_id=str(profile["user_id"]),
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="ROADMAP_ITEM not found for this user")
+    return ApiResponse(data={"roadmap_item": _jsonable(item)})
+
+
+@app.post("/api/roadmap/item/{item_id}/skip", response_model=ApiResponse)
+async def skip_item(
+    item_id: str,
+    request: SkipRoadmapItemRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, request.telegram_id)
+    item = await skip_roadmap_item(
+        session,
+        item_id=item_id,
+        profile_id=str(profile["user_id"]),
+        note_text=request.feedback_text,
+        current_datetime=request.current_datetime,
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="ROADMAP_ITEM not found for this user")
+
+    feedback = await insert_roadmap_feedback(
+        session,
+        profile_id=str(profile["user_id"]),
+        roadmap_id=str(item["roadmap_id"]),
+        item_ids=[str(item["item_id"])],
+        feedback_type=request.reason,
+        feedback_text=request.feedback_text,
+    )
+    return ApiResponse(
+        data={
+            "roadmap_item": _jsonable(item),
+            "roadmap_feedback": _jsonable(feedback),
+        }
+    )
 
 
 @app.post("/api/roadmap/item/complete", response_model=ApiResponse)

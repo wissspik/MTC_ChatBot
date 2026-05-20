@@ -15,14 +15,17 @@ services:
       - ./backend/db/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-progressors} -d ${POSTGRES_DB:-progressors}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
 
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        INSTALL_LOCAL_LLM: ${INSTALL_LOCAL_LLM:-false}
     container_name: progressors_backend
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-progressors}:${POSTGRES_PASSWORD:-progressors}@postgres:5432/${POSTGRES_DB:-progressors}

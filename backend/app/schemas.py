@@ -13,6 +13,26 @@ class AnalyzeProfileRequest(BaseModel):
     dialog_history: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ProfileUpdateRequest(BaseModel):
+    username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    goal_text: str | None = None
+    direction: str | None = None
+    specific_track: str | None = None
+    target_role: str | None = None
+    goal_reason: str | None = None
+    current_level: str | None = Field(default=None, pattern="^(beginner|basic|professional)$")
+    time_per_week_label: str | None = None
+    time_per_week_value: int | None = Field(default=None, ge=0)
+    preferred_formats: list[str] | None = None
+    wishes: str | None = None
+    preference_json: dict[str, Any] | None = None
+    notification_settings_json: dict[str, Any] | None = None
+    dialog_state: str | None = None
+    profile_json: dict[str, Any] | None = None
+
+
 class GenerateRoadmapRequest(BaseModel):
     telegram_id: int
     dialog_history: list[dict[str, Any]] = Field(default_factory=list)
@@ -39,6 +59,22 @@ class CompleteRoadmapItemRequest(BaseModel):
     answers: list[dict[str, Any]] | dict[str, Any] = Field(default_factory=list)
     note_text: str | None = None
     practice_result: str | None = None
+    current_datetime: datetime | None = None
+
+
+class RoadmapStatusRequest(BaseModel):
+    telegram_id: int
+    status: str = Field(pattern="^(draft|active|paused|completed|replaced|archived)$")
+
+
+class StartRoadmapItemRequest(BaseModel):
+    telegram_id: int
+
+
+class SkipRoadmapItemRequest(BaseModel):
+    telegram_id: int
+    reason: str = Field(default="change_request", pattern="^(not_suitable|too_hard|too_easy|already_completed|change_request)$")
+    feedback_text: str | None = None
     current_datetime: datetime | None = None
 
 
