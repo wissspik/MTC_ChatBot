@@ -11,9 +11,12 @@ from app.db import get_session
 from app.llm_client import LlmClient
 from app.prompts import load_prompt, render_prompt
 from app.repository import (
+    complete_roadmap_item,
     count_sent_pushes_today,
     get_due_motivation_pushes,
     get_roadmap_feedback,
+    get_roadmap_by_id,
+    get_roadmap_item_by_id,
     get_roadmap_for_profile,
     get_roadmap_items,
     get_user_profile,
@@ -115,7 +118,12 @@ async def analyze_profile(
     }
     prompt = render_prompt(prompt_template, variables)
 
-    llm_client = LlmClient(settings.api_llm, settings.llm_timeout_seconds)
+    llm_client = LlmClient(
+        api_llm=settings.api_llm,
+        timeout_seconds=settings.llm_timeout_seconds,
+        use_local=settings.use_local_llm,
+        local_model_name=settings.local_llm_model,
+    )
     try:
         llm_output = await llm_client.run_prompt(
             prompt_name="profile_analysis",
@@ -158,6 +166,109 @@ async def analyze_profile(
     )
 
 
+@app.get("/api/profile/{telegram_id}", response_model=ApiResponse)
+async def get_profile(
+    telegram_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await get_user_profile(session, telegram_id=telegram_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="USER_PROFILE not found")
+    return ApiResponse(data={"user_profile": _jsonable(profile)})
+
+
+@app.get("/api/roadmap/{roadmap_id}", response_model=ApiResponse)
+async def get_roadmap(
+    roadmap_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    roadmap = await get_roadmap_by_id(session, roadmap_id=roadmap_id)
+    if not roadmap:
+        raise HTTPException(status_code=404, detail="ROADMAP not found")
+    return ApiResponse(data={"roadmap": _jsonable(roadmap)})
+
+
+@app.get("/api/roadmap/{roadmap_id}/items", response_model=ApiResponse)
+async def get_roadmap_items_endpoint(
+    roadmap_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    items = await get_roadmap_items(session, roadmap_id=roadmap_id)
+    return ApiResponse(data={"roadmap_items": _jsonable(items)})
+
+
+@app.get("/api/roadmap/{roadmap_id}/item/{item_id}/test", response_model=ApiResponse)
+async def get_roadmap_item_test(
+    roadmap_id: str,
+    item_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    item = await get_roadmap_item_by_id(
+        session,
+        item_id=item_id,
+        roadmap_id=roadmap_id,
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="ROADMAP_ITEM not found")
+
+    test_payload = {
+        "item_id": str(item["item_id"]),
+        "roadmap_id": str(item["roadmap_id"]),
+        "name": item.get("name"),
+        "description": item.get("description"),
+        "resources": item.get("resources"),
+        "completion_check_type": item.get("completion_check_type"),
+        "completion_check_json": item.get("completion_check_json"),
+        "self_check_questions": item.get("self_check_questions"),
+        "min_seconds_before_complete": item.get("min_seconds_before_complete"),
+        "xp": item.get("xp"),
+        "xp_policy_json": item.get("xp_policy_json"),
+    }
+    return ApiResponse(data={"mini_test": _jsonable(test_payload)})
+
+
+@app.post("/api/roadmap/item/complete", response_model=ApiResponse)
+async def complete_item(
+    request: CompleteRoadmapItemRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await get_user_profile(session, telegram_id=request.telegram_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="USER_PROFILE not found")
+    
+    profile_id = str(profile["user_id"])
+    
+    # Complete the item and calculate XP
+    completed_item = await complete_roadmap_item(
+        session,
+        item_id=request.item_id,
+        profile_id=profile_id,
+        spent_seconds=request.spent_seconds,
+        answers=request.answers,
+        note_text=request.note_text,
+        practice_result=request.practice_result,
+        current_datetime=request.current_datetime or datetime.now(UTC),
+    )
+    
+    if not completed_item:
+        raise HTTPException(status_code=404, detail="ROADMAP_ITEM not found for this user")
+    
+    # Fetch updated profile to return current XP
+    updated_profile = await get_user_profile(session, telegram_id=request.telegram_id)
+    
+    return ApiResponse(
+        data={
+            "completed_item": _jsonable(completed_item),
+            "user_profile": _jsonable(updated_profile),
+            "xp_earned": {
+                "pending_xp": completed_item.get("pending_xp", 0),
+                "status": completed_item.get("status"),
+                "global_xp": updated_profile.get("global_xp") if updated_profile else 0,
+            },
+        }
+    )
+
+
 @app.post("/api/roadmap/generate", response_model=ApiResponse)
 async def generate_roadmap(
     request: GenerateRoadmapRequest,
@@ -177,7 +288,12 @@ async def generate_roadmap(
     }
     prompt = render_prompt(prompt_template, variables)
 
-    llm_client = LlmClient(settings.api_llm, settings.llm_timeout_seconds)
+    llm_client = LlmClient(
+        api_llm=settings.api_llm,
+        timeout_seconds=settings.llm_timeout_seconds,
+        use_local=settings.use_local_llm,
+        local_model_name=settings.local_llm_model,
+    )
     try:
         llm_output = await llm_client.run_prompt(
             prompt_name="roadmap_generation",
@@ -290,7 +406,12 @@ async def correct_roadmap_by_feedback(
     }
     prompt = render_prompt(prompt_template, variables)
 
-    llm_client = LlmClient(settings.api_llm, settings.llm_timeout_seconds)
+    llm_client = LlmClient(
+        api_llm=settings.api_llm,
+        timeout_seconds=settings.llm_timeout_seconds,
+        use_local=settings.use_local_llm,
+        local_model_name=settings.local_llm_model,
+    )
     try:
         llm_output = await llm_client.run_prompt(
             prompt_name="roadmap_correction",

@@ -83,6 +83,21 @@ async def get_user_profile(session: AsyncSession, *, telegram_id: int) -> dict[s
     return dict(row) if row else None
 
 
+async def get_roadmap_by_id(
+    session: AsyncSession,
+    *,
+    roadmap_id: str,
+) -> dict[str, Any] | None:
+    result = await session.execute(
+        text(
+            "SELECT * FROM roadmap WHERE roadmap_id = :roadmap_id"
+        ),
+        {"roadmap_id": roadmap_id},
+    )
+    row = result.mappings().first()
+    return dict(row) if row else None
+
+
 async def get_roadmap_for_profile(
     session: AsyncSession,
     *,
@@ -135,6 +150,30 @@ async def get_roadmap_items(
             {"roadmap_id": roadmap_id},
         )
     return [dict(row) for row in result.mappings().all()]
+
+
+async def get_roadmap_item_by_id(
+    session: AsyncSession,
+    *,
+    item_id: str,
+    roadmap_id: str | None = None,
+) -> dict[str, Any] | None:
+    if roadmap_id:
+        result = await session.execute(
+            text(
+                "SELECT * FROM roadmap_item WHERE item_id::TEXT = :item_id AND roadmap_id = :roadmap_id"
+            ),
+            {"item_id": item_id, "roadmap_id": roadmap_id},
+        )
+    else:
+        result = await session.execute(
+            text(
+                "SELECT * FROM roadmap_item WHERE item_id::TEXT = :item_id"
+            ),
+            {"item_id": item_id},
+        )
+    row = result.mappings().first()
+    return dict(row) if row else None
 
 
 async def get_roadmap_feedback(
@@ -702,3 +741,125 @@ async def mark_motivation_push_status(
     row = dict(result.mappings().one())
     await session.commit()
     return row
+
+
+async def complete_roadmap_item(
+    session: AsyncSession,
+    *,
+    item_id: str,
+    profile_id: str,
+    spent_seconds: int,
+    answers: dict[str, Any] | list[dict[str, Any]] | None,
+    note_text: str | None = None,
+    practice_result: str | None = None,
+    current_datetime: datetime | None = None,
+) -> dict[str, Any]:
+    """
+    Complete a roadmap item and calculate XP based on xp_policy_json.
+    Returns updated item with XP calculations.
+    """
+    now = current_datetime or datetime.now(UTC)
+    
+    # Fetch the item
+    result = await session.execute(
+        text(
+            "SELECT * FROM roadmap_item WHERE item_id::TEXT = :item_id AND profile_id = :profile_id"
+        ),
+        {"item_id": item_id, "profile_id": profile_id},
+    )
+    row = result.mappings().first()
+    if not row:
+        return {}
+    
+    item = dict(row)
+    
+    # Parse policies
+    xp_policy = _dict(item.get("xp_policy_json") or {})
+    completion_check = _dict(item.get("completion_check_json") or {})
+    min_seconds = item.get("min_seconds_before_complete") or 0
+    total_xp = item.get("xp") or 0
+    completion_type = item.get("completion_check_type") or "self_check"
+    
+    # Calculate pending_xp based on spent time and answers
+    has_answers = (
+        (isinstance(answers, dict) and answers) or 
+        (isinstance(answers, list) and len(answers) > 0)
+    )
+    
+    pending_xp = 0
+    new_status = "pending_check"
+    
+    if not has_answers:
+        # Only clicked "Done" without answers: 30% XP (click_only_max_percent)
+        click_only_pct = xp_policy.get("click_only_max_percent", 30)
+        pending_xp = int(total_xp * click_only_pct / 100)
+        new_status = "pending_check"
+    else:
+        # Has answers: calculate XP based on parts
+        parts = xp_policy.get("parts", {})
+        xp_earned_pct = 0
+        
+        # Add for min_time
+        if spent_seconds >= min_seconds:
+            xp_earned_pct += parts.get("min_time", 20)
+        
+        # Add for quiz/self_check
+        if completion_type in ["quiz", "self_check"]:
+            xp_earned_pct += parts.get("quiz_or_self_check", 50)
+        
+        # Add for practice/note
+        if completion_type in ["practice", "note"]:
+            xp_earned_pct += parts.get("practice_or_note", 30)
+        
+        pending_xp = int(total_xp * xp_earned_pct / 100)
+        new_status = "completed"
+    
+    # Update item
+    update_result = await session.execute(
+        text(
+            """
+            UPDATE roadmap_item
+            SET status = :status,
+                pending_xp = :pending_xp,
+                user_note = :user_note,
+                completed_at = :completed_at,
+                updated_at = now()
+            WHERE item_id::TEXT = :item_id AND profile_id = :profile_id
+            RETURNING *
+            """
+        ),
+        {
+            "status": new_status,
+            "pending_xp": pending_xp,
+            "user_note": note_text or practice_result,
+            "completed_at": now,
+            "item_id": item_id,
+            "profile_id": profile_id,
+        },
+    )
+    
+    # Update user profile XP
+    profile_result = await session.execute(
+        text(
+            """
+            SELECT global_xp, streak_days FROM user_profile WHERE user_id::TEXT = :profile_id
+            """
+        ),
+        {"profile_id": profile_id},
+    )
+    profile_row = profile_result.mappings().first()
+    if profile_row:
+        current_xp = profile_row["global_xp"] or 0
+        # Add pending_xp to global (or could use verified_xp when reviewed)
+        new_global_xp = current_xp + pending_xp
+        
+        await session.execute(
+            text(
+                "UPDATE user_profile SET global_xp = :global_xp, updated_at = now() WHERE user_id::TEXT = :profile_id"
+            ),
+            {"global_xp": new_global_xp, "profile_id": profile_id},
+        )
+    
+    await session.commit()
+    updated_item = dict(update_result.mappings().one())
+    return updated_item

@@ -26,6 +26,8 @@ services:
     container_name: progressors_backend
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-progressors}:${POSTGRES_PASSWORD:-progressors}@postgres:5432/${POSTGRES_DB:-progressors}
+      USE_LOCAL_LLM: ${USE_LOCAL_LLM:-false}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}
       API_LLM: ${API_LLM:-http://host.docker.internal:8080/dump}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_API_BASE: ${TELEGRAM_API_BASE:-https://api.telegram.org}
@@ -33,9 +35,12 @@ services:
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - huggingface_cache:/app/.cache/huggingface
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   postgres_data:
+  huggingface_cache:

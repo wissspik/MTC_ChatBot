@@ -15,6 +15,8 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
     api_llm: str = Field(default="http://localhost:8080/dump", alias="API_LLM")
+    use_local_llm: bool = Field(default=False, alias="USE_LOCAL_LLM")
+    local_llm_model: str = Field(default="Qwen/Qwen2.5-7B-Instruct", alias="LOCAL_LLM_MODEL")
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_api_base: str = Field(default="https://api.telegram.org", alias="TELEGRAM_API_BASE")
     prompt_file_path: Path = Field(default=DEFAULT_PROMPT_FILE_PATH, alias="PROMPT_FILE_PATH")
