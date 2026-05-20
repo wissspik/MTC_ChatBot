@@ -15,10 +15,10 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
     api_llm: str = Field(default="http://localhost:8080/dump", alias="API_LLM")
-    llm_provider: str = Field(default="openai_compatible", alias="LLM_PROVIDER")
-    llm_api_base_url: str = Field(default="https://api.groq.com/openai/v1", alias="LLM_API_BASE_URL")
+    llm_provider: str = Field(default="gemini", alias="LLM_PROVIDER")
+    llm_api_base_url: str = Field(default="https://generativelanguage.googleapis.com/v1beta/openai", alias="LLM_API_BASE_URL")
     llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
-    llm_model: str = Field(default="llama-3.1-8b-instant", alias="LLM_MODEL")
+    llm_model: str = Field(default="gemini-2.5-flash-lite", alias="LLM_MODEL")
     llm_temperature: float = Field(default=0.2, alias="LLM_TEMPERATURE")
     llm_json_mode: bool = Field(default=True, alias="LLM_JSON_MODE")
     use_local_llm: bool = Field(default=False, alias="USE_LOCAL_LLM")

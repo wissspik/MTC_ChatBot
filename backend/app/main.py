@@ -742,7 +742,17 @@ async def correct_roadmap_by_feedback(
             status="failed",
             error_text=str(exc),
         )
-        raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}") from exc
+        return ApiResponse(
+            data={
+                "saved_feedback": _jsonable(saved_feedback),
+                "llm_output": None,
+                "updated_roadmap": None,
+                "changed_items": [],
+                "pushes": [],
+                "correction_status": "llm_failed",
+                "correction_error": str(exc),
+            }
+        )
 
     roadmap_update = await update_roadmap_after_correction(
         session,

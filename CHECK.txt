@@ -1,0 +1,301 @@
+Backend API quick check
+=======================
+
+Base URL:
+http://localhost:8000
+
+All normal responses have this shape:
+{
+  "ok": true,
+  "data": {}
+}
+
+
+1. GET /health
+Checks that backend is alive.
+Returns:
+- status: "ok"
+
+
+2. POST /api/profile/analyze
+Starts or continues profile collection from a user message.
+Uses Gemini LLM.
+
+Body:
+{
+  "telegram_id": 123,
+  "username": "user",
+  "first_name": "User",
+  "user_message": "Я хочу стать Python разработчиком",
+  "dialog_history": []
+}
+
+Returns:
+- llm_output: what LLM understood and next question if needed
+- user_profile: saved profile row
+
+
+3. GET /api/profile/{telegram_id}
+Returns one user profile by Telegram id.
+
+Returns:
+- profile
+- user_profile alias for compatibility
+
+
+4. PATCH /api/profile/{telegram_id}
+Manually updates profile fields.
+Useful when the bot already collected answers from buttons.
+
+Body example:
+{
+  "target_role": "junior python backend developer",
+  "current_level": "beginner",
+  "time_per_week_value": 5,
+  "preferred_formats": ["practice", "article"]
+}
+
+Returns:
+- user_profile
+
+
+5. GET /api/profile/{telegram_id}/state
+Returns full current state for the bot screen.
+
+Returns:
+- profile
+- roadmap
+- items
+- progress
+- old aliases: user_profile, current_roadmap, roadmap_items
+
+
+6. GET /api/profile/{telegram_id}/roadmaps
+Lists all roadmaps for user.
+
+Optional query:
+?status=active
+
+Returns:
+- profile
+- roadmaps
+- count
+- status_filter
+
+
+7. GET /api/profile/{telegram_id}/roadmap/current
+Returns active/current roadmap.
+
+Returns:
+- roadmap
+- items
+- progress
+
+
+8. GET /api/profile/{telegram_id}/progress
+Returns profile plus current roadmap progress.
+
+Returns:
+- profile
+- roadmap
+- progress
+
+
+9. POST /api/roadmap/generate
+Generates roadmap from saved profile.
+Uses Gemini LLM.
+
+Body:
+{
+  "telegram_id": 123,
+  "dialog_history": []
+}
+
+Returns:
+- llm_output
+- user_profile
+- created.roadmap
+- created.items
+- created.pushes
+
+
+10. GET /api/roadmap/{roadmap_id}
+Returns full roadmap details.
+
+Returns:
+- roadmap
+- items
+- progress
+- feedback
+
+
+11. PATCH /api/roadmap/{roadmap_id}/status
+Changes roadmap status.
+
+Body:
+{
+  "telegram_id": 123,
+  "status": "active"
+}
+
+Allowed status:
+draft, active, paused, completed, replaced, archived
+
+Returns:
+- roadmap
+
+
+12. GET /api/roadmap/{roadmap_id}/items
+Returns roadmap steps.
+
+Returns:
+- roadmap
+- items
+- count
+- roadmap_items alias
+
+
+13. GET /api/roadmap/{roadmap_id}/feedback
+Returns feedback history for roadmap.
+
+Optional query:
+?limit=30
+
+Returns:
+- roadmap
+- feedback
+- count
+- roadmap_feedback alias
+
+
+14. GET /api/roadmap/{roadmap_id}/item/{item_id}/test
+Returns mini-test/check data for one roadmap item.
+
+Returns:
+- mini_test
+
+
+15. POST /api/roadmap/item/{item_id}/start
+Marks item as in_progress.
+
+Body:
+{
+  "telegram_id": 123
+}
+
+Returns:
+- roadmap_item
+
+
+16. POST /api/roadmap/item/{item_id}/skip
+Marks item as skipped and saves feedback.
+
+Body:
+{
+  "telegram_id": 123,
+  "reason": "already_completed",
+  "feedback_text": "Эту тему уже знаю"
+}
+
+Allowed reason:
+not_suitable, too_hard, too_easy, already_completed, change_request
+
+Returns:
+- roadmap_item
+- roadmap_feedback
+
+
+17. POST /api/roadmap/item/complete
+Completes item or moves it to pending_check.
+Calculates XP.
+
+Body:
+{
+  "telegram_id": 123,
+  "item_id": "uuid",
+  "spent_seconds": 600,
+  "answers": [{"question": "Что сделал?", "answer": "Изучил тему"}],
+  "note_text": "Мой конспект"
+}
+
+Returns:
+- completed_item
+- user_profile
+- xp_earned
+
+
+18. POST /api/roadmap/feedback
+Saves user feedback and asks LLM to correct 1-2 items.
+If Gemini is temporarily unavailable, feedback is still saved and response is 200 with correction_status = "llm_failed".
+
+Body:
+{
+  "telegram_id": 123,
+  "roadmap_id": "uuid",
+  "item_ids": ["uuid"],
+  "feedback_type": "change_request",
+  "feedback_text": "Сделай шаг более практическим",
+  "max_items_to_change": 1,
+  "dialog_history": []
+}
+
+Allowed feedback_type:
+useful, not_suitable, too_hard, too_easy, already_completed, change_request
+
+Returns:
+- saved_feedback
+- llm_output or null
+- updated_roadmap
+- changed_items
+- pushes
+- correction_status if LLM failed
+
+
+19. POST /api/notifications/send-due
+Sends planned motivation pushes through Telegram.
+For testing use dry_run = true.
+
+Body:
+{
+  "telegram_id": 123,
+  "limit": 20,
+  "dry_run": true,
+  "current_datetime": "2026-06-30T12:00:00+00:00"
+}
+
+Returns:
+- dry_run
+- requested_telegram_id
+- processed
+- results
+
+If dry_run is false, TELEGRAM_BOT_TOKEN must be set.
+
+
+Minimal happy path
+==================
+
+1. POST /api/profile/analyze
+Message: "Я хочу стать Python разработчиком"
+
+2. PATCH /api/profile/{telegram_id}
+Fill missing fields like target_role, current_level, time_per_week_value.
+
+3. POST /api/roadmap/generate
+Creates roadmap, items and motivation pushes.
+
+4. GET /api/profile/{telegram_id}/roadmap/current
+Shows current roadmap with progress.
+
+5. GET /api/roadmap/{roadmap_id}/items
+Shows all steps.
+
+6. POST /api/roadmap/item/{item_id}/start
+Starts first step.
+
+7. GET /api/roadmap/{roadmap_id}/item/{item_id}/test
+Gets mini-test/check.
+
+8. POST /api/roadmap/item/complete
+Completes step and updates XP.
+

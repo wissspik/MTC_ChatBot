@@ -26,7 +26,7 @@ class LlmClient:
         self.provider = (provider or "legacy").strip().lower()
         self.api_base_url = (api_base_url or "").rstrip("/")
         self.api_key = api_key
-        self.model = model or "llama-3.1-8b-instant"
+        self.model = model or "gemini-2.5-flash-lite"
         self.temperature = temperature
         self.json_mode = json_mode
 
@@ -45,7 +45,7 @@ class LlmClient:
         if self.use_local:
             return self._run_local_prompt(prompt)
 
-        if self.provider in {"openai", "openai_compatible", "groq", "openrouter"}:
+        if self.provider in {"openai", "openai_compatible", "groq", "openrouter", "gemini"}:
             return await self._run_openai_compatible_prompt(prompt_name, prompt)
 
         return await self._run_legacy_http_prompt(prompt)
