@@ -19,6 +19,19 @@ class GenerateRoadmapRequest(BaseModel):
     current_datetime: datetime | None = None
 
 
+class RoadmapFeedbackRequest(BaseModel):
+    telegram_id: int
+    roadmap_id: str
+    item_ids: list[str] = Field(default_factory=list)
+    feedback_type: str = Field(
+        pattern="^(useful|not_suitable|too_hard|too_easy|already_completed|change_request)$"
+    )
+    feedback_text: str | None = None
+    max_items_to_change: int = Field(default=2, ge=1, le=2)
+    dialog_history: list[dict[str, Any]] = Field(default_factory=list)
+    current_datetime: datetime | None = None
+
+
 class ApiResponse(BaseModel):
     ok: bool = True
     data: dict[str, Any]

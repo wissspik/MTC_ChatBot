@@ -92,3 +92,43 @@ POST /api/roadmap/generate
 - сохраняет `roadmap`, `roadmap_item`, `motivation_push`;
 - обновляет `user_profile`;
 - пишет лог в `llm_run`.
+
+## Ручка 3: фидбек и коррекция roadmap
+
+```http
+POST /api/roadmap/feedback
+```
+
+```json
+{
+  "telegram_id": 123,
+  "roadmap_id": "uuid",
+  "item_ids": ["uuid-1", "uuid-2"],
+  "feedback_type": "too_hard",
+  "feedback_text": "Эти два шага слишком сложные, хочу проще и больше практики",
+  "max_items_to_change": 2,
+  "dialog_history": []
+}
+```
+
+Что делает:
+
+- сохраняет фидбек в `roadmap_feedback`;
+- берет `Prompt 3` из `INSTUC.txt`;
+- передает LLM текущий `user_profile`, `roadmap`, выбранные `roadmap_item` и историю фидбека;
+- LLM может изменить максимум `max_items_to_change`, сейчас 1-2 ноды;
+- применяет UPDATE к `roadmap_item`;
+- при необходимости обновляет `roadmap.roadmap_json`;
+- создает новые `motivation_push`;
+- пишет лог в `llm_run` с `prompt_name = roadmap_correction`.
+
+Допустимые `feedback_type`:
+
+```text
+useful
+not_suitable
+too_hard
+too_easy
+already_completed
+change_request
+```
