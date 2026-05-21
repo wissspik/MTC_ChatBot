@@ -1608,7 +1608,12 @@ async def complete_roadmap_item(
     # Fetch the item
     result = await session.execute(
         text(
-            "SELECT * FROM roadmap_item WHERE item_id::TEXT = :item_id AND profile_id = :profile_id"
+            """
+            SELECT *
+            FROM roadmap_item
+            WHERE item_id::TEXT = :item_id
+              AND profile_id::TEXT = :profile_id
+            """
         ),
         {"item_id": item_id, "profile_id": profile_id},
     )
@@ -1621,7 +1626,7 @@ async def complete_roadmap_item(
     previous_pending_xp = item.get("pending_xp") or 0
     already_completed = item.get("status") in {"completed", "completed_late"}
     pending_xp = total_xp
-    xp_delta = 0 if already_completed else max(0, pending_xp - previous_pending_xp)
+    xp_delta = 0 if already_completed else max(0, pending_xp or previous_pending_xp)
     user_note = note_text or practice_result
     
     # Update item
@@ -1634,7 +1639,8 @@ async def complete_roadmap_item(
                 user_note = COALESCE(:user_note, user_note),
                 completed_at = COALESCE(completed_at, :completed_at),
                 updated_at = now()
-            WHERE item_id::TEXT = :item_id AND profile_id = :profile_id
+            WHERE item_id::TEXT = :item_id
+              AND profile_id::TEXT = :profile_id
             RETURNING *
             """
         ),
@@ -1668,6 +1674,11 @@ async def complete_roadmap_item(
             {"global_xp": new_global_xp, "profile_id": profile_id},
         )
     
+    updated_row = update_result.mappings().first()
+    if not updated_row:
+        await session.rollback()
+        return {}
+
     await session.commit()
-    updated_item = dict(update_result.mappings().one())
+    updated_item = dict(updated_row)
     return updated_item

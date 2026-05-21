@@ -503,6 +503,51 @@ def build_ai_master_fallback(
         else:
             missing_data.append("current_roadmap")
 
+    if not answer and (current_item or next_item or roadmap or profile):
+        item = current_item or next_item
+        if isinstance(item, dict) and item.get("name"):
+            source_id = str(item.get("source_id"))
+            roadmap_title = roadmap.get("title") if isinstance(roadmap, dict) else None
+            completed = progress.get("completed_items") if isinstance(progress, dict) else None
+            total = progress.get("total_items") if isinstance(progress, dict) else None
+            percent = progress.get("completion_percent") if isinstance(progress, dict) else None
+            task = item.get("practice_task") or item.get("description") or item.get("skill_result")
+            questions = item.get("self_check_questions") if isinstance(item.get("self_check_questions"), list) else []
+            parts = []
+            if roadmap_title:
+                parts.append(f"Ты сейчас идешь по маршруту «{roadmap_title}».")
+            if completed is not None and total is not None:
+                progress_text = f"Прогресс: {completed}/{total} шагов"
+                if percent is not None:
+                    progress_text += f" ({percent}%)."
+                else:
+                    progress_text += "."
+                parts.append(progress_text)
+            parts.append(f"Текущий шаг: «{item['name']}».")
+            if task:
+                parts.append(f"Что сделать: {task}")
+            if questions:
+                parts.append("Для мини-проверки подготовь ответ на вопрос: " + str(questions[0]))
+            parts.append("Лучшее действие сейчас: открой материал шага, выполни практику и после этого заверши шаг в карте.")
+            answer = " ".join(parts)
+            facts.append({"text": answer, "source_ids": [source_id, "roadmap:current", "progress:current"]})
+            used_sources.extend(
+                [
+                    {"source_id": source_id, "fields": ["name", "practice_task", "description", "self_check_questions"], "reason": "current or next roadmap item"},
+                    {"source_id": "roadmap:current", "fields": ["title"], "reason": "current roadmap title"},
+                    {"source_id": "progress:current", "fields": ["completed_items", "total_items", "completion_percent"], "reason": "current progress"},
+                ]
+            )
+        elif isinstance(roadmap, dict) and roadmap.get("title"):
+            answer = f"У тебя уже есть активный маршрут «{roadmap['title']}». Открой карту roadmap и начни с первого доступного шага. После выполнения практики пройди мини-проверку, чтобы зафиксировать прогресс и XP."
+            facts.append({"text": answer, "source_ids": ["roadmap:current"]})
+            used_sources.append({"source_id": "roadmap:current", "fields": ["title"], "reason": "current roadmap title"})
+        elif isinstance(profile, dict) and (profile.get("goal_text") or profile.get("target_role")):
+            goal = profile.get("goal_text") or profile.get("target_role")
+            answer = f"По профилю твоя цель: {goal}. Сначала создай или открой roadmap, затем проходи шаги по порядку и закрывай мини-проверки."
+            facts.append({"text": answer, "source_ids": ["profile"]})
+            used_sources.append({"source_id": "profile", "fields": ["goal_text", "target_role"], "reason": "saved learning goal"})
+
     if not answer:
         cannot_answer = True
         answer = (

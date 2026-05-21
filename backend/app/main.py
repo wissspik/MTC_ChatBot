@@ -1378,7 +1378,7 @@ async def ai_master(
                 "answer": fallback_output["answer"],
                 "ai_master_output": fallback_output,
                 "llm_output": llm_output,
-                "llm_status": "blocked_guarded_fallback",
+                "llm_status": "guarded_deterministic_answer",
                 "guard": guard,
                 "user_profile": _jsonable(profile),
                 "current_roadmap": _jsonable(roadmap),
@@ -1835,23 +1835,30 @@ async def complete_item(
     request: CompleteRoadmapItemRequest,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse:
+    if not request.item_id.strip():
+        raise HTTPException(status_code=400, detail="item_id is required")
+
     profile = await get_user_profile(session, telegram_id=request.telegram_id)
     if not profile:
         raise HTTPException(status_code=404, detail="USER_PROFILE not found")
     
     profile_id = str(profile["user_id"])
     
-    # Complete the item and calculate XP
-    completed_item = await complete_roadmap_item(
-        session,
-        item_id=request.item_id,
-        profile_id=profile_id,
-        spent_seconds=request.spent_seconds,
-        answers=request.answers,
-        note_text=request.note_text,
-        practice_result=request.practice_result,
-        current_datetime=request.current_datetime or datetime.now(UTC),
-    )
+    try:
+        completed_item = await complete_roadmap_item(
+            session,
+            item_id=request.item_id.strip(),
+            profile_id=profile_id,
+            spent_seconds=request.spent_seconds,
+            answers=request.answers,
+            note_text=request.note_text,
+            practice_result=request.practice_result,
+            current_datetime=request.current_datetime or datetime.now(UTC),
+        )
+    except Exception as exc:
+        await session.rollback()
+        print("ROADMAP_ITEM_COMPLETE_ERROR", repr(exc))
+        raise HTTPException(status_code=500, detail=f"Failed to complete roadmap item: {type(exc).__name__}") from exc
     
     if not completed_item:
         raise HTTPException(status_code=404, detail="ROADMAP_ITEM not found for this user")
