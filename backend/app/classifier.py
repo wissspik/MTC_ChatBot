@@ -235,6 +235,135 @@ def merge_profile_updates(llm_update: dict[str, Any], classifier_update: dict[st
     return merged
 
 
+def classify_followup_answer(message: str, profile: dict[str, Any]) -> dict[str, Any]:
+    text = _norm(message)
+    update: dict[str, Any] = {}
+
+    if _has(text, "начина", "нович", "с нуля", "beginner"):
+        update["Current_level"] = "beginner"
+    elif _has(text, "есть база", "базов", "основ", "basic", "немного"):
+        update["Current_level"] = "basic"
+    elif _has(text, "проф", "работаю", "опыт", "middle", "senior", "professional"):
+        update["Current_level"] = "professional"
+
+    if _has(text, "до 3", "до трех", "до трёх", "мало времени"):
+        update["Time_per_week_label"] = "до 3 часов"
+        update["Time_per_week_value"] = 2
+    elif _has(text, "3-7", "3–7", "3 — 7", "3 до 7", "3 часа", "5 часов", "6 часов"):
+        update["Time_per_week_label"] = "3-7 часов"
+        update["Time_per_week_value"] = 5
+    elif _has(text, "более 7", "больше 7", "7+", "много времени"):
+        update["Time_per_week_label"] = "более 7 часов"
+        update["Time_per_week_value"] = 9
+
+    formats: list[str] = []
+    if _has(text, "видео", "video"):
+        formats.append("video")
+    if _has(text, "практи", "задан", "проект", "practice", "task"):
+        formats.append("practice")
+    if _has(text, "статья", "статьи", "текст", "читать", "article", "read"):
+        formats.append("article")
+    if formats:
+        update["Preferred_formats"] = list(dict.fromkeys(formats))
+        preference = _default_preference_json()
+        preference["collected"] = True
+        if "video" in formats:
+            preference["format_weights"]["video"] = 1.2
+        if "practice" in formats:
+            preference["format_weights"]["practice"] = 1.4
+            preference["soft_rules"].append("prefer_practice")
+        if "article" in formats:
+            preference["format_weights"]["article"] = 1.2
+        update["Preference_json"] = preference
+
+    if _has(text, "backend", "бэкенд", "бекенд", "api", "fastapi", "django"):
+        update["Direction"] = "programming"
+        update["Specific_track"] = "python_backend"
+        update["Target_role"] = "python backend developer"
+        update.setdefault("Goal_text", "Python backend разработчик")
+    elif _has(text, "telegram", "телеграм", "бот"):
+        update["Direction"] = "programming"
+        update["Specific_track"] = "python_telegram_bots"
+        update["Target_role"] = "telegram bot developer"
+        update.setdefault("Goal_text", "Python Telegram bot разработчик")
+    elif _has(text, "data science", "машин", "данн", "аналит"):
+        update["Direction"] = "programming"
+        update["Specific_track"] = "python_data_science"
+        update["Target_role"] = "data science specialist"
+        update.setdefault("Goal_text", "Python Data Science специалист")
+    elif _has(text, "автомат", "скрипт", "парсинг"):
+        update["Direction"] = "programming"
+        update["Specific_track"] = "python_automation"
+        update["Target_role"] = "automation developer"
+        update.setdefault("Goal_text", "Python automation разработчик")
+    elif _has(text, "frontend", "фронтенд", "react", "javascript", "typescript"):
+        update["Direction"] = "programming"
+        update["Specific_track"] = "frontend"
+        update["Target_role"] = "frontend developer"
+        update.setdefault("Goal_text", "Frontend разработчик")
+    elif _has(text, "ui/ux", "ux/ui", "figma", "фигм", "интерфейс"):
+        update["Direction"] = "design"
+        update["Specific_track"] = "ui_ux_design"
+        update["Target_role"] = "ui/ux designer"
+        update.setdefault("Goal_text", "UI/UX дизайнер")
+    elif _has(text, "smm", "соцсет", "контент"):
+        update["Direction"] = "marketing"
+        update["Specific_track"] = "smm"
+        update["Target_role"] = "smm specialist"
+        update.setdefault("Goal_text", "SMM специалист")
+
+    if _has(text, "пока не знаю", "не знаю", "не уверен"):
+        if profile.get("direction") == "programming" and not profile.get("specific_track"):
+            update["Specific_track"] = "programming_general"
+            update["Target_role"] = "programming learner"
+        elif not profile.get("specific_track"):
+            update["Specific_track"] = "general"
+
+    return update
+
+
+SUPPORTED_LEARNING_AREAS = [
+    "Python backend",
+    "Telegram-боты на Python",
+    "Data Science",
+    "Frontend",
+    "UI/UX дизайн",
+    "Графический дизайн",
+    "SMM",
+    "Digital marketing",
+    "SEO",
+]
+
+
+def is_unsupported_initial_topic(profile: dict[str, Any], profile_update: dict[str, Any]) -> bool:
+    has_saved_goal = bool(profile.get("goal_text") or profile.get("direction") or profile.get("specific_track"))
+    has_extracted_goal = bool(
+        profile_update.get("Goal_text")
+        or profile_update.get("Direction")
+        or profile_update.get("Specific_track")
+        or profile_update.get("Target_role")
+    )
+    return not has_saved_goal and not has_extracted_goal
+
+
+def build_unsupported_topic_output(message: str) -> dict[str, Any]:
+    return {
+        "Db_target": "USER_PROFILE",
+        "Action": "unsupported_topic",
+        "Unsupported_topic": True,
+        "Understood_request": message,
+        "Answer": (
+            "Привет! Пока у нас такой темы нет, мы ее потом добавим. "
+            "Сейчас я могу собрать трек только по доступным областям."
+        ),
+        "Available_areas": SUPPORTED_LEARNING_AREAS,
+        "User_profile_update": {"Dialog_state": "start"},
+        "Need_question": False,
+        "Next_question": None,
+        "Ready_for_roadmap_generation": False,
+    }
+
+
 def build_profile_snapshot(profile: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
     mapping = {
         "Goal_text": "goal_text",

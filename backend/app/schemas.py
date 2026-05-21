@@ -74,6 +74,10 @@ class RoadmapStatusRequest(BaseModel):
     status: str = Field(pattern="^(draft|active|paused|completed|replaced|archived)$")
 
 
+class RoadmapSwitchRequest(BaseModel):
+    roadmap_id: str
+
+
 class StartRoadmapItemRequest(BaseModel):
     telegram_id: int
 

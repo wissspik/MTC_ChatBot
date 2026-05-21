@@ -22,6 +22,8 @@ export type UserProfile = {
   preference_json: Record<string, unknown>;
   notification_settings_json: Record<string, unknown>;
   global_xp: number;
+  procoins?: number;
+  achievements_json?: Record<string, unknown>;
   streak_days: number;
   streak_multiplier: number;
   last_activity: string | null;
@@ -159,8 +161,10 @@ async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const errorBody = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(errorBody?.detail || `API request failed: ${response.status}`);
+    const errorBody = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+    const detail = errorBody?.detail;
+    const message = typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : `API request failed: ${response.status}`;
+    throw new Error(message);
   }
 
   const payload = (await response.json()) as ApiResponse<T>;
@@ -215,6 +219,21 @@ export function generateRoadmap(telegramId: number) {
       dialog_history: [],
       current_datetime: new Date().toISOString(),
     }),
+  });
+}
+
+export function switchRoadmap(telegramId: number, roadmapId: string) {
+  return apiRequest<{
+    profile: UserProfile;
+    current_roadmap: Roadmap;
+    roadmap: Roadmap;
+    items: RoadmapItem[];
+    roadmap_items: RoadmapItem[];
+    progress: Progress;
+    roadmaps: Roadmap[];
+  }>(`/api/profile/${telegramId}/roadmap/switch`, {
+    method: "POST",
+    body: JSON.stringify({ roadmap_id: roadmapId }),
   });
 }
 

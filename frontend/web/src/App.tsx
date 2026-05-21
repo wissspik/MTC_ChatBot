@@ -323,7 +323,7 @@ function getProfileView(state: ProfileState | null): ProfileView {
     level: getLevelFromXp(xp),
     xp,
     nextLevelXp: getNextLevelXp(xp),
-    procoins: Math.floor(xp / 20) || profile.procoins,
+    procoins: backendProfile.procoins ?? (Math.floor(xp / 20) || profile.procoins),
     goal: backendProfile.target_role || backendProfile.goal_text || state.roadmap?.target_role || profile.goal,
     estimatedTime: formatEstimatedTime(state.roadmap?.estimated_duration_weeks),
     progress: state.progress?.completion_percent ?? profile.progress,
@@ -614,6 +614,8 @@ function RoadmapPage({
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
   );
+  const profileMissing = !state && apiError?.includes("USER_PROFILE not found");
+  const roadmapMissing = !loading && !!state && !state.roadmap && state.items.length === 0;
 
   return (
     <section
@@ -624,20 +626,43 @@ function RoadmapPage({
       <div className="relative z-10 flex flex-1 flex-col">
         <Header roadmapTitle={roadmapTitle} />
         <ProgressSummary loading={loading} profile={profile} progress={state?.progress ?? null} />
-        {apiError && (
+        {apiError && !profileMissing && (
           <div className="glass-card relative z-10 mb-4 rounded-3xl border-progressPink/25 p-4 text-sm text-white/72">
             Backend недоступен или профиль ещё не создан. Показываю моковые данные. Ошибка: {apiError}
           </div>
         )}
-        <RoadmapMap nodes={nodes} selectedNodeId={selectedNodeId} onSelect={onSelect} />
-        <RoadmapNodeSheet
-          node={selectedNode}
-          telegramId={telegramId}
-          onClose={() => onSelect(null)}
-          onRefresh={onRefresh}
-        />
+        {profileMissing || roadmapMissing ? (
+          <EmptyRoadmapState telegramId={telegramId} />
+        ) : (
+          <>
+            <RoadmapMap nodes={nodes} selectedNodeId={selectedNodeId} onSelect={onSelect} />
+            <RoadmapNodeSheet
+              node={selectedNode}
+              telegramId={telegramId}
+              onClose={() => onSelect(null)}
+              onRefresh={onRefresh}
+            />
+          </>
+        )}
       </div>
     </section>
+  );
+}
+
+function EmptyRoadmapState({ telegramId }: { telegramId: number }) {
+  return (
+    <div className="glass-card relative z-10 mt-6 rounded-[28px] p-6 text-center">
+      <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-3xl bg-progressPurple/20 text-progressPurple">
+        <Rocket size={30} />
+      </div>
+      <h2 className="text-2xl font-black">Трек еще не создан</h2>
+      <p className="mt-3 text-[15px] leading-snug text-white/66">
+        Открой Telegram-бота, нажми «Сделать трек» и ответь на вопросы. После генерации roadmap появится здесь.
+      </p>
+      <p className="mt-4 rounded-2xl bg-white/[0.045] px-4 py-3 text-sm font-bold text-white/58">
+        Telegram ID: {telegramId}
+      </p>
+    </div>
   );
 }
 

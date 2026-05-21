@@ -58,6 +58,35 @@ services:
       postgres:
         condition: service_healthy
 
+  web:
+    build:
+      context: .
+      dockerfile: frontend/web/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${PUBLIC_BACKEND_URL:-http://localhost:8000}
+        VITE_APP_TITLE: ${VITE_APP_TITLE:-Progressors WebApp}
+        VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-.ngrok-free.dev,.ngrok-free.app}
+        VITE_DEV_TELEGRAM_ID: ${VITE_DEV_TELEGRAM_ID:-123}
+    container_name: progressors_web
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_started
+
+  telegram_bot:
+    build:
+      context: .
+      dockerfile: telegram_bot/Dockerfile
+    container_name: progressors_telegram_bot
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      BACKEND_URL: http://backend:8000
+      WEBAPP_URL: ${WEBAPP_URL:-http://localhost:5173}
+    depends_on:
+      backend:
+        condition: service_started
+
 volumes:
   postgres_data:
   huggingface_cache:

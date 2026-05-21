@@ -16,7 +16,10 @@ from app.ai_master import (
 from app.config import get_settings
 from app.classifier import (
     build_profile_snapshot,
+    build_unsupported_topic_output,
+    classify_followup_answer,
     get_next_profile_question,
+    is_unsupported_initial_topic,
     merge_profile_updates,
 )
 from app.db import ensure_db_compat, get_session
@@ -62,6 +65,7 @@ from app.schemas import (
     RoadmapItemResourceProgressRequest,
     RoadmapFeedbackRequest,
     RoadmapStatusRequest,
+    RoadmapSwitchRequest,
     SendNotificationsRequest,
     SkipRoadmapItemRequest,
     StartRoadmapItemRequest,
@@ -200,6 +204,46 @@ async def analyze_profile(
         last_name=request.last_name,
     )
     classifier_output = classify_profile_message(request.user_message)
+    followup_update = classify_followup_answer(request.user_message, profile)
+    if followup_update:
+        classifier_update = classifier_output.setdefault("User_profile_update", {})
+        classifier_update.update(followup_update)
+        classifier_output.setdefault("signals", {})["followup_answer"] = sorted(followup_update.keys())
+    classifier_profile_update = classifier_output.get("User_profile_update") or {}
+
+    if is_unsupported_initial_topic(profile, classifier_profile_update):
+        unsupported_output = build_unsupported_topic_output(request.user_message)
+        updated_profile = await update_user_profile(
+            session,
+            user_id=str(profile["user_id"]),
+            update=unsupported_output["User_profile_update"],
+        )
+        await _insert_llm_run_best_effort(
+            session,
+            profile_id=str(profile["user_id"]),
+            roadmap_id=None,
+            prompt_name="profile_analysis",
+            input_json={
+                "USER_MESSAGE": request.user_message,
+                "USER_PROFILE_ROW_JSON": _jsonable(profile),
+                "DIALOG_HISTORY": request.dialog_history,
+            },
+            output_json={
+                "classifier_output": classifier_output,
+                "unsupported_output": unsupported_output,
+            },
+            status="failed",
+            error_text="unsupported_topic",
+        )
+        return ApiResponse(
+            data={
+                "classifier_output": classifier_output,
+                "llm_output": unsupported_output,
+                "unsupported_topic": True,
+                "available_areas": unsupported_output["Available_areas"],
+                "user_profile": _jsonable(updated_profile),
+            }
+        )
 
     prompt_template = load_prompt(settings.prompt_file_path, 1)
     variables = {
@@ -611,6 +655,43 @@ async def get_current_roadmap(
     )
 
 
+@app.post("/api/profile/{telegram_id}/roadmap/switch", response_model=ApiResponse)
+async def switch_current_roadmap(
+    telegram_id: int,
+    request: RoadmapSwitchRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, telegram_id)
+    profile_id = str(profile["user_id"])
+    roadmap = await update_roadmap_status_for_profile(
+        session,
+        profile_id=profile_id,
+        roadmap_id=request.roadmap_id,
+        status="active",
+    )
+    if not roadmap:
+        raise HTTPException(status_code=404, detail="ROADMAP not found for this user")
+
+    items = await get_roadmap_items(session, roadmap_id=str(roadmap["roadmap_id"]))
+    progress = await get_roadmap_progress(
+        session,
+        roadmap_id=str(roadmap["roadmap_id"]),
+        profile_id=profile_id,
+    )
+    roadmaps = await list_roadmaps_for_profile(session, profile_id=profile_id)
+    return ApiResponse(
+        data={
+            "profile": _jsonable(profile),
+            "current_roadmap": _jsonable(roadmap),
+            "roadmap": _jsonable(roadmap),
+            "items": _jsonable(items),
+            "roadmap_items": _jsonable(items),
+            "progress": _jsonable(progress),
+            "roadmaps": _jsonable(roadmaps),
+        }
+    )
+
+
 @app.get("/api/profile/{telegram_id}/progress", response_model=ApiResponse)
 async def get_profile_progress(
     telegram_id: int,
@@ -1011,6 +1092,14 @@ async def generate_roadmap(
         items=llm_output.get("Roadmap_items_insert") or [],
         pushes=llm_output.get("Motivation_pushes_insert") or [],
     )
+    activated_roadmap = await update_roadmap_status_for_profile(
+        session,
+        profile_id=str(profile["user_id"]),
+        roadmap_id=str(bundle["roadmap"]["roadmap_id"]),
+        status="active",
+    )
+    if activated_roadmap:
+        bundle["roadmap"] = activated_roadmap
     await insert_llm_run(
         session,
         profile_id=str(profile["user_id"]),

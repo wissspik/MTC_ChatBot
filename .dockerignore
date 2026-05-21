@@ -8,7 +8,27 @@
 !backend/Dockerfile
 !backend/requirements.txt
 !backend/requirements-local.txt
+!telegram_bot/
+!telegram_bot/**
+!frontend/
+!frontend/web/
+!frontend/web/src/
+!frontend/web/src/**
+!frontend/web/public/
+!frontend/web/public/**
+!frontend/web/index.html
+!frontend/web/package.json
+!frontend/web/package-lock.json
+!frontend/web/tsconfig.json
+!frontend/web/vite.config.ts
+!frontend/web/tailwind.config.js
+!frontend/web/postcss.config.js
+!frontend/web/Dockerfile
 !INSTUC.txt
 
 backend/**/__pycache__/
 backend/**/*.pyc
+telegram_bot/**/__pycache__/
+telegram_bot/**/*.pyc
+frontend/web/node_modules/
+frontend/web/dist/

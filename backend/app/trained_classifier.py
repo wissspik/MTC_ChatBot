@@ -305,7 +305,7 @@ def classify_profile_message_ml(message: str) -> dict[str, Any]:
     preferences = _classify_preferences(message)
 
     update: dict[str, Any] = {}
-    selected_track = _track_override(message) or (track["label"] if track["confidence"] >= 0.42 else None)
+    selected_track = _track_override(message) or (track["label"] if track["confidence"] >= 0.65 else None)
     selected_level = _level_override(message)
 
     if selected_track in TRACK_META:
