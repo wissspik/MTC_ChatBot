@@ -238,6 +238,62 @@ def merge_profile_updates(llm_update: dict[str, Any], classifier_update: dict[st
 def classify_followup_answer(message: str, profile: dict[str, Any]) -> dict[str, Any]:
     text = _norm(message)
     update: dict[str, Any] = {}
+    direction = profile.get("direction")
+    has_track = bool(profile.get("specific_track") or profile.get("target_role"))
+
+    if not has_track:
+        if direction == "design":
+            if _has(text, "ui/ux", "ux/ui", "ui", "ux", "интерфейс", "приложен", "сайт", "web", "веб", "figma", "фигм"):
+                update["Specific_track"] = "ui_ux_design"
+                update["Target_role"] = "ui/ux designer"
+                update.setdefault("Goal_text", "UI/UX дизайнер")
+            elif _has(text, "граф", "логотип", "бренд", "айдентик", "иллюстрац", "плакат"):
+                update["Specific_track"] = "graphic_design"
+                update["Target_role"] = "graphic designer"
+                update.setdefault("Goal_text", "Графический дизайнер")
+            elif _has(text, "пока не знаю", "не знаю", "не уверен"):
+                update["Specific_track"] = "ui_ux_design"
+                update["Target_role"] = "ui/ux designer"
+                update.setdefault("Goal_text", "UI/UX дизайнер")
+
+        elif direction == "marketing":
+            if _has(text, "smm", "соцсет", "контент", "пост"):
+                update["Specific_track"] = "smm"
+                update["Target_role"] = "smm specialist"
+                update.setdefault("Goal_text", "SMM специалист")
+            elif _has(text, "digital", "таргет", "реклам", "воронк", "performance"):
+                update["Specific_track"] = "digital_marketing"
+                update["Target_role"] = "digital marketing specialist"
+                update.setdefault("Goal_text", "Digital marketing специалист")
+            elif _has(text, "seo", "поиск", "ключев"):
+                update["Specific_track"] = "seo"
+                update["Target_role"] = "seo specialist"
+                update.setdefault("Goal_text", "SEO специалист")
+            elif _has(text, "пока не знаю", "не знаю", "не уверен"):
+                update["Specific_track"] = "smm"
+                update["Target_role"] = "smm specialist"
+                update.setdefault("Goal_text", "SMM специалист")
+
+        elif direction == "programming":
+            if _has(text, "backend", "бэкенд", "бекенд", "api", "fastapi", "django"):
+                update["Specific_track"] = "python_backend"
+                update["Target_role"] = "python backend developer"
+                update.setdefault("Goal_text", "Python backend разработчик")
+            elif _has(text, "telegram", "телеграм", "бот"):
+                update["Specific_track"] = "python_telegram_bots"
+                update["Target_role"] = "telegram bot developer"
+                update.setdefault("Goal_text", "Python Telegram bot разработчик")
+            elif _has(text, "data science", "машин", "данн", "аналит"):
+                update["Specific_track"] = "python_data_science"
+                update["Target_role"] = "data science specialist"
+                update.setdefault("Goal_text", "Python Data Science специалист")
+            elif _has(text, "frontend", "фронтенд", "react", "javascript", "typescript"):
+                update["Specific_track"] = "frontend"
+                update["Target_role"] = "frontend developer"
+                update.setdefault("Goal_text", "Frontend разработчик")
+            elif _has(text, "пока не знаю", "не знаю", "не уверен"):
+                update["Specific_track"] = "programming_general"
+                update["Target_role"] = "programming learner"
 
     if _has(text, "начина", "нович", "с нуля", "beginner"):
         update["Current_level"] = "beginner"
@@ -316,6 +372,12 @@ def classify_followup_answer(message: str, profile: dict[str, Any]) -> dict[str,
         if profile.get("direction") == "programming" and not profile.get("specific_track"):
             update["Specific_track"] = "programming_general"
             update["Target_role"] = "programming learner"
+        elif profile.get("direction") == "design" and not profile.get("specific_track"):
+            update["Specific_track"] = "ui_ux_design"
+            update["Target_role"] = "ui/ux designer"
+        elif profile.get("direction") == "marketing" and not profile.get("specific_track"):
+            update["Specific_track"] = "smm"
+            update["Target_role"] = "smm specialist"
         elif not profile.get("specific_track"):
             update["Specific_track"] = "general"
 
@@ -421,13 +483,25 @@ def get_next_profile_question(profile: dict[str, Any]) -> dict[str, Any]:
         }
 
     if not specific_track and not target_role:
+        if direction == "design":
+            buttons = ["UI/UX дизайн", "Графический дизайн", "Пока не знаю"]
+            text = "Какое направление дизайна тебе ближе?"
+        elif direction == "marketing":
+            buttons = ["SMM", "Digital marketing", "SEO", "Пока не знаю"]
+            text = "Какое направление маркетинга тебе ближе?"
+        elif direction == "programming":
+            buttons = ["Backend", "Frontend", "Telegram-боты", "Data Science", "Пока не знаю"]
+            text = "Какое направление программирования тебе ближе?"
+        else:
+            buttons = ["Практика", "Теория", "Профессия", "Пока не знаю"]
+            text = "Какое направление внутри этой цели тебе ближе?"
         return {
             "Need_question": True,
             "Ready_for_roadmap_generation": False,
             "Next_question": {
                 "Type": "specificity",
-                "Text": "Какое направление внутри этой цели тебе ближе?",
-                "Buttons": ["Практика", "Теория", "Профессия", "Пока не знаю"],
+                "Text": text,
+                "Buttons": buttons,
                 "Allow_multiple": False,
             },
         }
