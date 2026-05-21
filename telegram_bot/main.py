@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -41,6 +42,10 @@ class TrackSession:
 
 
 sessions: dict[int, TrackSession] = {}
+
+MAX_PROFILE_HISTORY_MESSAGES = 6
+MAX_ROADMAP_HISTORY_MESSAGES = 4
+MAX_MESSAGE_CHARS = 500
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -103,10 +108,24 @@ def response_data(payload: dict[str, Any]) -> dict[str, Any]:
     return payload.get("data") or payload
 
 
+def normalize_message_text(text: str) -> str:
+    text = (text or "").strip()
+    if len(text) > MAX_MESSAGE_CHARS:
+        text = text[:MAX_MESSAGE_CHARS] + "..."
+    return text
+
+
+def trim_history(history: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    return history[-limit:]
+
+
 async def api_request(method: str, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=180)
+    timeout = aiohttp.ClientTimeout(total=120)
+    print("API REQUEST", method, f"{BACKEND_URL}{path}")
+    print("PAYLOAD SIZE", len(json.dumps(json_body or {}, ensure_ascii=False)))
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.request(method, f"{BACKEND_URL}{path}", json=json_body) as response:
+            print("API RESPONSE", response.status, path)
             payload = await response.json(content_type=None)
             if response.status >= 400:
                 raise RuntimeError(str(payload.get("detail") or payload))
@@ -139,7 +158,7 @@ async def finish_roadmap(message: Message, telegram_id: int, state: TrackSession
         "/api/roadmap/generate",
         {
             "telegram_id": telegram_id,
-            "dialog_history": state.dialog_history,
+            "dialog_history": trim_history(state.dialog_history, MAX_ROADMAP_HISTORY_MESSAGES),
             "current_datetime": datetime.now(UTC).isoformat(),
         },
     )
@@ -159,9 +178,10 @@ async def process_profile_answer(message: Message) -> None:
     payload = user_payload(message)
     telegram_id = payload["telegram_id"]
     state = sessions.setdefault(telegram_id, TrackSession(collecting=True))
-    user_message = message.text or ""
+    user_message = normalize_message_text(message.text or "")
 
     state.dialog_history.append({"role": "user", "content": user_message})
+    state.dialog_history = trim_history(state.dialog_history, MAX_PROFILE_HISTORY_MESSAGES)
     data = await api_request(
         "POST",
         "/api/profile/analyze",
@@ -184,7 +204,6 @@ async def process_profile_answer(message: Message) -> None:
         question_text = next_question.get("Text") or "Уточни, пожалуйста, еще один момент 🙌"
         buttons = next_question.get("Buttons") or []
         allow_multiple = bool(next_question.get("Allow_multiple"))
-        state.dialog_history.append({"role": "assistant", "content": question_text})
         await message.answer(
             question_text,
             reply_markup=question_keyboard([str(button) for button in buttons], allow_multiple),
@@ -211,7 +230,10 @@ async def show_info(message: Message) -> None:
 
 async def start_track(message: Message) -> None:
     payload = user_payload(message)
-    sessions[payload["telegram_id"]] = TrackSession(collecting=True)
+    sessions[payload["telegram_id"]] = TrackSession(
+        collecting=True,
+        dialog_history=[],
+    )
     await message.answer(
         "С чего начнем? Напиши навык или профессию, которую хочешь освоить.\n\nНапример: Python backend, UI/UX, SMM ✍️",
         reply_markup=question_keyboard(),
@@ -241,6 +263,16 @@ async def handle_text(message: Message) -> None:
     if state and state.collecting:
         try:
             await process_profile_answer(message)
+        except asyncio.TimeoutError:
+            await message.answer(
+                "Генерация заняла слишком много времени 😕 Попробуй чуть короче описать цель или начни заново.",
+                reply_markup=main_keyboard(),
+            )
+        except aiohttp.ClientError as exc:
+            await message.answer(
+                f"Backend временно недоступен 😕\n\n{exc}",
+                reply_markup=main_keyboard(),
+            )
         except Exception as exc:
             await message.answer(
                 f"Не получилось связаться с backend 😕\n\n{exc}",
@@ -254,6 +286,9 @@ async def handle_text(message: Message) -> None:
 async def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN or BOT_TOKEN is required")
+
+    print("BOT BACKEND_URL =", BACKEND_URL)
+    print("BOT WEBAPP_URL =", WEBAPP_URL)
 
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
