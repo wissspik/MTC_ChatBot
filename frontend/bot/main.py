@@ -1,8 +1,8 @@
 import asyncio
 import os
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import aiohttp
@@ -34,10 +34,10 @@ CANCEL = "Отмена"
 @dataclass
 class TrackSession:
     collecting: bool = False
-    dialog_history: list[dict[str, Any]] = field(default_factory=list)
+    dialog_history: List[Dict[str, Any]] = field(default_factory=list)
 
 
-sessions: dict[int, TrackSession] = {}
+sessions: Dict[int, TrackSession] = {}
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -51,7 +51,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def question_keyboard(buttons: list[str] | None = None, allow_multiple: bool = False) -> ReplyKeyboardMarkup:
+def question_keyboard(buttons: Optional[List[str]] = None, allow_multiple: bool = False) -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(text=button)] for button in buttons or []]
     rows.append([KeyboardButton(text=CANCEL)])
     placeholder = (
@@ -90,7 +90,7 @@ def webapp_keyboard(telegram_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def user_payload(message: Message) -> dict[str, Any]:
+def user_payload(message: Message) -> Dict[str, Any]:
     user = message.from_user
     return {
         "telegram_id": user.id if user else message.chat.id,
@@ -100,28 +100,36 @@ def user_payload(message: Message) -> dict[str, Any]:
     }
 
 
-def response_data(payload: dict[str, Any]) -> dict[str, Any]:
+def response_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload.get("data") or payload
 
 
-async def api_request(method: str, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
+async def api_request(method: str, path: str, json_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     timeout = aiohttp.ClientTimeout(total=180)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.request(method, f"{BACKEND_URL}{path}", json=json_body) as response:
-            payload = await response.json(content_type=None)
+            response_text = await response.text()
+            try:
+                payload = await response.json(content_type=None)
+            except Exception as exc:
+                preview = response_text.strip().replace("\n", " ")[:300]
+                raise RuntimeError(
+                    f"Backend returned non-JSON response: status={response.status}, "
+                    f"url={BACKEND_URL}{path}, body={preview!r}"
+                ) from exc
             if response.status >= 400:
                 raise RuntimeError(str(payload.get("detail") or payload))
             return response_data(payload)
 
 
-def next_question_from(data: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+def next_question_from(data: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]]]:
     llm_output = data.get("llm_output") or data.get("fallback_output") or {}
     need_question = bool(llm_output.get("Need_question"))
     next_question = llm_output.get("Next_question") if isinstance(llm_output, dict) else None
     return need_question, next_question if isinstance(next_question, dict) else None
 
 
-def unsupported_topic_message(data: dict[str, Any]) -> str | None:
+def unsupported_topic_message(data: Dict[str, Any]) -> Optional[str]:
     llm_output = data.get("llm_output") or data.get("fallback_output") or {}
     if not data.get("unsupported_topic") and not llm_output.get("Unsupported_topic"):
         return None
@@ -149,7 +157,7 @@ async def finish_roadmap(message: Message, telegram_id: int, state: TrackSession
         {
             "telegram_id": telegram_id,
             "dialog_history": state.dialog_history,
-            "current_datetime": datetime.now(UTC).isoformat(),
+            "current_datetime": datetime.now(timezone.utc).isoformat(),
         },
     )
     created = data.get("created") or {}

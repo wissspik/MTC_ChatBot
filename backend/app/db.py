@@ -38,3 +38,27 @@ async def ensure_db_compat() -> None:
                 """
             )
         )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE llm_run
+                DROP CONSTRAINT IF EXISTS llm_run_prompt_name_check
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE llm_run
+                ADD CONSTRAINT llm_run_prompt_name_check
+                CHECK (
+                    prompt_name IN (
+                        'profile_analysis',
+                        'roadmap_generation',
+                        'roadmap_correction',
+                        'ai_master'
+                    )
+                )
+                """
+            )
+        )
