@@ -24,6 +24,7 @@ from app.llm_client import LlmClient
 from app.prompts import load_prompt, render_prompt
 from app.resource_guard import guard_roadmap_items
 from app.repository import (
+    complete_roadmap_for_profile,
     complete_roadmap_item,
     count_sent_pushes_today,
     get_due_motivation_pushes,
@@ -45,6 +46,7 @@ from app.repository import (
     skip_roadmap_item,
     start_roadmap_item,
     set_roadmap_item_resource_progress,
+    unskip_roadmap_item,
     update_roadmap_after_correction,
     update_roadmap_items_after_correction,
     update_roadmap_status_for_profile,
@@ -56,6 +58,7 @@ from app.schemas import (
     AiMasterRequest,
     AnalyzeProfileRequest,
     ApiResponse,
+    CompleteRoadmapRequest,
     CompleteRoadmapItemRequest,
     GenerateRoadmapRequest,
     ProfileUpdateRequest,
@@ -65,6 +68,7 @@ from app.schemas import (
     SendNotificationsRequest,
     SkipRoadmapItemRequest,
     StartRoadmapItemRequest,
+    UnskipRoadmapItemRequest,
 )
 from app.telegram_client import TelegramClient
 from app.trained_classifier import classify_profile_message_ml as classify_profile_message
@@ -693,6 +697,50 @@ async def patch_roadmap_status(
     return ApiResponse(data={"roadmap": _jsonable(roadmap)})
 
 
+@app.post("/api/roadmap/{roadmap_id}/complete", response_model=ApiResponse)
+async def complete_roadmap(
+    roadmap_id: str,
+    request: CompleteRoadmapRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, request.telegram_id)
+    roadmap = await complete_roadmap_for_profile(
+        session,
+        profile_id=str(profile["user_id"]),
+        roadmap_id=roadmap_id,
+        allow_skipped=request.allow_skipped,
+        force=request.force,
+    )
+    if not roadmap:
+        raise HTTPException(status_code=404, detail="ROADMAP not found for this user")
+
+    blocked = bool(roadmap.pop("_completion_blocked", False))
+    completion_stats = roadmap.pop("_completion_stats", {})
+    blocking_items = roadmap.pop("_completion_blocking_items", 0)
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "ROADMAP has unfinished items",
+                "blocking_items": blocking_items,
+                "completion_stats": _jsonable(completion_stats),
+            },
+        )
+
+    progress = await get_roadmap_progress(
+        session,
+        roadmap_id=roadmap_id,
+        profile_id=str(profile["user_id"]),
+    )
+    return ApiResponse(
+        data={
+            "roadmap": _jsonable(roadmap),
+            "progress": _jsonable(progress),
+            "completion_stats": _jsonable(completion_stats),
+        }
+    )
+
+
 @app.get("/api/roadmap/{roadmap_id}/items", response_model=ApiResponse)
 async def get_roadmap_items_endpoint(
     roadmap_id: str,
@@ -859,6 +907,39 @@ async def skip_item(
         data={
             "roadmap_item": _jsonable(item),
             "roadmap_feedback": _jsonable(feedback),
+        }
+    )
+
+
+@app.post("/api/roadmap/item/{item_id}/unskip", response_model=ApiResponse)
+async def unskip_item(
+    item_id: str,
+    request: UnskipRoadmapItemRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, request.telegram_id)
+    item = await unskip_roadmap_item(
+        session,
+        item_id=item_id,
+        profile_id=str(profile["user_id"]),
+        start_now=request.start_now,
+        note_text=request.note_text,
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="ROADMAP_ITEM not found for this user")
+    was_unskipped = bool(item.pop("_unskipped", False))
+    if not was_unskipped:
+        raise HTTPException(status_code=400, detail="ROADMAP_ITEM is not skipped")
+
+    progress = await get_roadmap_progress(
+        session,
+        roadmap_id=str(item["roadmap_id"]),
+        profile_id=str(profile["user_id"]),
+    )
+    return ApiResponse(
+        data={
+            "roadmap_item": _jsonable(item),
+            "progress": _jsonable(progress),
         }
     )
 

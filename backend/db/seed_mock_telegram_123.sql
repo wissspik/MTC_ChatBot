@@ -74,7 +74,7 @@ WITH profile_insert AS (
             "xp_pushes": true,
             "allow_roast": true
         }'::JSONB,
-        360,
+        280,
         4,
         1.2,
         CURRENT_DATE,
@@ -86,7 +86,7 @@ WITH profile_insert AS (
             "ai_master": {
                 "name": "AI Master",
                 "tone": "direct",
-                "last_summary": "Ты уже закрыл основы Python и HTTP. Следующий фокус: SQL и проектирование схемы."
+                "last_summary": "Ты закрыл первые 3 шага. Сейчас фокус на 4 шаге: схема БД и связи."
             }
         }'::JSONB
     )
@@ -267,8 +267,8 @@ items_insert AS (
                 '{"base_xp": 90}',
                 0,
                 1.1,
-                'completed_late',
-                'Закрыл с опозданием, но endpoint-ы описал.',
+                'completed',
+                'Закрыл полностью, endpoint-ы описал.',
                 now() - INTERVAL '3 days',
                 '{"mock": true, "module": "http"}'
             ),
@@ -293,14 +293,14 @@ items_insert AS (
                 '{"type": "sql_tasks", "min_tasks": 5}',
                 600,
                 110,
-                0,
-                0,
+                110,
+                110,
                 '{"base_xp": 110}',
                 0,
                 1.2,
-                'in_progress',
-                'Сейчас прохожу JOIN.',
-                null,
+                'completed',
+                'Закрыл SQL-практику на 100%.',
+                now() - INTERVAL '1 day',
                 '{"mock": true, "module": "sql"}'
             ),
             (
@@ -329,8 +329,8 @@ items_insert AS (
                 '{"base_xp": 120}',
                 0,
                 1.0,
-                'not_started',
-                null,
+                'in_progress',
+                'Сейчас прохожу шаг 4: схема БД и связи.',
                 null,
                 '{"mock": true, "module": "postgres_schema"}'
             ),
@@ -391,8 +391,8 @@ items_insert AS (
                 '{"base_xp": 130}',
                 0,
                 1.0,
-                'pending_check',
-                'Отправлено на самопроверку.',
+                'not_started',
+                null,
                 null,
                 '{"mock": true, "module": "async_sqlalchemy"}'
             ),
@@ -453,9 +453,9 @@ items_insert AS (
                 '{"base_xp": 110}',
                 0,
                 1.0,
-                'skipped',
-                'Пока пропущено, вернусь после фронта.',
-                now() - INTERVAL '1 day',
+                'not_started',
+                null,
+                null,
                 '{"mock": true, "module": "api_tests"}'
             ),
             (
@@ -576,12 +576,12 @@ push_insert AS (
     CROSS JOIN (
         VALUES
             (
-                3,
+                4,
                 'deadline_warning',
                 'duolingo_aggressive',
-                'SQL сам себя не выучит. Закрой JOIN сегодня и забери XP.',
-                'Открыть SQL',
-                '{"action": "open_item", "step_order": 3}',
+                'Следующий шаг: схема БД. Закрой его сегодня и забери XP.',
+                'Открыть шаг',
+                '{"action": "open_item", "step_order": 4}',
                 now() - INTERVAL '1 hour',
                 null,
                 'planned'
@@ -660,9 +660,9 @@ SELECT
     CURRENT_DATE - EXTRACT(DOW FROM CURRENT_DATE)::INT,
     CURRENT_DATE - EXTRACT(DOW FROM CURRENT_DATE)::INT + 6,
     3,
-    360,
+    280,
     4,
-    2,
+    3,
     0,
     'test_progressor',
     'Тестовый Пользователь'

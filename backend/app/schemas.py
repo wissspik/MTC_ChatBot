@@ -74,6 +74,12 @@ class RoadmapStatusRequest(BaseModel):
     status: str = Field(pattern="^(draft|active|paused|completed|replaced|archived)$")
 
 
+class CompleteRoadmapRequest(BaseModel):
+    telegram_id: int
+    allow_skipped: bool = True
+    force: bool = False
+
+
 class StartRoadmapItemRequest(BaseModel):
     telegram_id: int
 
@@ -83,6 +89,12 @@ class SkipRoadmapItemRequest(BaseModel):
     reason: str = Field(default="change_request", pattern="^(not_suitable|too_hard|too_easy|already_completed|change_request)$")
     feedback_text: str | None = None
     current_datetime: datetime | None = None
+
+
+class UnskipRoadmapItemRequest(BaseModel):
+    telegram_id: int
+    start_now: bool = False
+    note_text: str | None = None
 
 
 class SendNotificationsRequest(BaseModel):
