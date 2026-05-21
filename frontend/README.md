@@ -1,46 +1,54 @@
-# Progressors Telegram WebApp MVP
+# Progressors Telegram WebApp
 
-MVP для хакатона: Telegram bot на `aiogram 3` и React WebApp на `Vite + TypeScript`.
-Все данные моковые, реального backend API, авторизации, Postgres и OpenAI-интеграции нет.
+Фронтенд состоит из двух частей:
 
-## Запуск web
+- `web` - React WebApp на Vite.
+- `bot` - Telegram-бот на aiogram, который собирает профиль, вызывает backend и открывает WebApp с готовым roadmap.
+
+## Запуск WebApp
 
 ```bash
-cd web
+cd frontend/web
 cp .env.example .env
 npm install
 npm run dev
 ```
 
-Vite покажет локальный URL. Для Telegram WebApp нужен публичный HTTPS URL, например через ngrok или аналогичный туннель.
-
-Пример через ngrok:
+Для Telegram WebApp нужен публичный HTTPS URL. Локально можно открыть Vite через ngrok или аналогичный туннель:
 
 ```bash
 ngrok http 5173
 ```
 
-Скопируй HTTPS URL вида `https://abc123.ngrok-free.app` в `bot/.env` как `WEBAPP_URL`.
+Полученный URL укажи в `frontend/bot/.env` как `WEBAPP_URL`.
 
-## Запуск bot
+## Запуск бота
 
 ```bash
-cd bot
+cd frontend/bot
 cp .env.example .env
-# отредактируй .env: BOT_TOKEN и WEBAPP_URL
-pip install aiogram python-dotenv
+pip install -r requirements.txt
 python main.py
 ```
 
-`WEBAPP_URL` должен вести на web-приложение без query-параметров. Бот сам добавляет:
+В `.env` нужны:
 
-- `/?tab=profile`
-- `/?tab=roadmap`
-- `/?tab=mentor`
+- `TELEGRAM_BOT_TOKEN` - токен Telegram-бота.
+- `BACKEND_URL` - адрес backend API, например `http://localhost:8000`.
+- `WEBAPP_URL` - адрес WebApp без query-параметров.
 
-## Что внутри
+Бот сам добавляет к ссылке `tab` и `telegram_id`, например:
 
-- `/bot/main.py` — Telegram bot с командой `/start` и тремя WebApp-кнопками.
-- `/web/src/App.tsx` — мобильный Telegram WebApp-интерфейс с вкладками.
-- `/web/src/data/mock.ts` — моковые данные пользователя, навыков, достижений, родмапа и AI-ментора.
-- `/web/src/index.css` — dark futuristic UI в стиле Progressors.
+```text
+/?tab=roadmap&telegram_id=123
+```
+
+## Docker Compose
+
+Из корня проекта:
+
+```bash
+docker compose up --build
+```
+
+Сервис `telegram_bot` собирается из `frontend/bot`.

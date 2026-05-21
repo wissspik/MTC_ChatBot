@@ -659,6 +659,8 @@ function RoadmapPage({
   const shouldShowFinishModal = Boolean(state?.roadmap && completionPercent >= 80);
   const [finishModalDismissed, setFinishModalDismissed] = useState(false);
   const [showNoRoadmapPrompt, setShowNoRoadmapPrompt] = useState(false);
+  const profileMissing = !state && apiError?.includes("USER_PROFILE not found");
+  const roadmapMissing = !loading && !!state && !state.roadmap && state.items.length === 0;
 
   return (
     <section
@@ -671,18 +673,24 @@ function RoadmapPage({
           <>
             <Header roadmapTitle={roadmapTitle} />
             <ProgressSummary loading={loading} profile={profile} progress={state?.progress ?? null} />
-            {apiError && (
+            {apiError && !profileMissing && (
               <div className="glass-card relative z-10 mb-4 rounded-3xl border-progressPink/25 p-4 text-sm text-white/72">
                 Backend недоступен или профиль ещё не создан. Показываю моковые данные. Ошибка: {apiError}
               </div>
             )}
-            <RoadmapMap nodes={nodes} selectedNodeId={selectedNodeId} onSelect={onSelect} />
-            <RoadmapNodeSheet
-              node={selectedNode}
-              telegramId={telegramId}
-              onClose={() => onSelect(null)}
-              onRefresh={onRefresh}
-            />
+            {profileMissing || roadmapMissing ? (
+              <EmptyRoadmapState telegramId={telegramId} />
+            ) : (
+              <>
+                <RoadmapMap nodes={nodes} selectedNodeId={selectedNodeId} onSelect={onSelect} />
+                <RoadmapNodeSheet
+                  node={selectedNode}
+                  telegramId={telegramId}
+                  onClose={() => onSelect(null)}
+                  onRefresh={onRefresh}
+                />
+              </>
+            )}
           </>
         )}
       </div>

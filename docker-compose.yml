@@ -77,7 +77,7 @@ services:
   telegram_bot:
     build:
       context: .
-      dockerfile: telegram_bot/Dockerfile
+      dockerfile: frontend/bot/Dockerfile
     container_name: progressors_telegram_bot
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
