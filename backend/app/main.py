@@ -1,3 +1,4 @@
+import asyncio
 import difflib
 import hashlib
 import json
@@ -338,6 +339,113 @@ Do not add other top-level keys.
 {output_schema_json}
 {retry_text}
 """.strip()
+
+
+def _build_roadmap_enrichment_prompt(*, profile: dict[str, Any], roadmap: dict[str, Any], domain: str) -> str:
+    compact_profile = {
+        "goal_text": profile.get("goal_text"),
+        "target_role": profile.get("target_role"),
+        "current_level": profile.get("current_level"),
+        "time_per_week_label": profile.get("time_per_week_label"),
+        "preferred_formats": profile.get("preferred_formats"),
+    }
+    compact_roadmap = {
+        "title": roadmap.get("Title"),
+        "direction": roadmap.get("Direction"),
+        "target_role": roadmap.get("Target_role"),
+        "estimated_duration_weeks": roadmap.get("Estimated_duration_weeks"),
+    }
+    return (
+        "Return only valid JSON. No markdown.\n"
+        "Language: Russian.\n"
+        "Create a short motivational enrichment for an already generated learning roadmap.\n"
+        "Do not create roadmap items, arrays, links, resources, DB fields, or nested objects.\n"
+        "Return exactly these 4 string fields: title, summary, personal_tip, motivation_message.\n"
+        f"Supported domain: {domain}\n"
+        f"Profile: {json.dumps(compact_profile, ensure_ascii=False, default=str)}\n"
+        f"Roadmap: {json.dumps(compact_roadmap, ensure_ascii=False, default=str)}"
+    )
+
+
+def _clean_enrichment_text(value: Any, *, max_chars: int = 280) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "..."
+    return text
+
+
+def _apply_roadmap_enrichment(output: dict[str, Any], enrichment: dict[str, Any]) -> None:
+    roadmap = output.get("Roadmap_insert") if isinstance(output.get("Roadmap_insert"), dict) else {}
+    roadmap_json = _as_dict(roadmap.get("Roadmap_json"))
+    allowed = {
+        key: _clean_enrichment_text(enrichment.get(key))
+        for key in ("title", "summary", "personal_tip", "motivation_message")
+        if _clean_enrichment_text(enrichment.get(key))
+    }
+    if allowed.get("title"):
+        roadmap["Title"] = allowed["title"]
+    if allowed:
+        roadmap_json["llm_enrichment"] = allowed
+        output["Llm_enrichment"] = allowed
+    roadmap["Roadmap_json"] = roadmap_json
+    output["Roadmap_insert"] = roadmap
+
+
+def _roadmap_enrichment_enabled(settings: Any) -> bool:
+    provider = str(settings.llm_provider or "").strip().lower()
+    if settings.use_local_llm:
+        return True
+    if provider == "ollama":
+        return True
+    if provider in {"openai", "openai_compatible", "groq", "openrouter", "gemini"}:
+        return bool(settings.llm_api_key)
+    return bool(settings.api_llm)
+
+
+async def _try_enrich_template_roadmap(
+    *,
+    settings: Any,
+    profile: dict[str, Any],
+    output: dict[str, Any],
+    domain: str,
+) -> tuple[bool, str | None]:
+    roadmap = output.get("Roadmap_insert") if isinstance(output.get("Roadmap_insert"), dict) else {}
+    prompt = _build_roadmap_enrichment_prompt(profile=profile, roadmap=roadmap, domain=domain)
+    llm_client = LlmClient(
+        api_llm=settings.api_llm,
+        timeout_seconds=15,
+        use_local=settings.use_local_llm,
+        local_model_name=settings.local_llm_model,
+        provider=settings.llm_provider,
+        api_base_url=settings.llm_api_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        temperature=0.6,
+        json_mode=True,
+        ollama_fallback_enabled=False,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_model=settings.ollama_model,
+        ollama_timeout_seconds=15,
+        ollama_num_ctx=min(settings.ollama_num_ctx, 2048),
+        ollama_num_predict=min(settings.ollama_num_predict, 512),
+    )
+    try:
+        enrichment = await asyncio.wait_for(
+            llm_client.run_prompt(
+                prompt_name="roadmap_enrichment",
+                prompt=prompt,
+                variables={},
+            ),
+            timeout=15,
+        )
+        if not isinstance(enrichment, dict):
+            return False, "enrichment_not_object"
+        if not any(isinstance(enrichment.get(key), str) and enrichment.get(key).strip() for key in ("title", "summary", "personal_tip", "motivation_message")):
+            return False, "enrichment_empty"
+        _apply_roadmap_enrichment(output, enrichment)
+        return True, None
+    except Exception as exc:
+        return False, f"{type(exc).__name__}:{exc}"
 
 
 def _normalize_title(value: Any) -> str:
@@ -1625,100 +1733,59 @@ async def generate_roadmap(
     variables = {
         "CURRENT_DATETIME": current_datetime.isoformat(),
         "USER_PROFILE_ROW_JSON": _jsonable(profile_for_generation),
-        "DIALOG_HISTORY": request.dialog_history,
+        "DIALOG_HISTORY": request.dialog_history[-4:],
         "SUPPORTED_DOMAIN": domain,
         "STYLE_SEED": style_seed,
         "CLASSIFIER_OUTPUT": domain_decision["classifier_output"],
+        "GENERATION_STRATEGY": "template_first_short_enrichment",
     }
 
-    llm_client = LlmClient(
-        api_llm=settings.api_llm,
-        timeout_seconds=settings.llm_timeout_seconds,
-        use_local=settings.use_local_llm,
-        local_model_name=settings.local_llm_model,
-        provider=settings.llm_provider,
-        api_base_url=settings.llm_api_base_url,
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-        temperature=0.7,
-        json_mode=settings.llm_json_mode,
-        ollama_fallback_enabled=settings.ollama_fallback_enabled,
-        ollama_base_url=settings.ollama_base_url,
-        ollama_model=settings.ollama_model,
-        ollama_timeout_seconds=settings.ollama_timeout_seconds,
-        ollama_num_ctx=settings.ollama_num_ctx,
-        ollama_num_predict=settings.ollama_num_predict,
+    llm_output = _prepare_roadmap_output(
+        build_template_roadmap(profile_for_generation, now=current_datetime),
+        domain=domain,
+        style_seed=style_seed,
     )
+    llm_output["Generation_strategy"] = {
+        "mode": "template_first",
+        "template_source": "build_template_roadmap",
+        "llm_scope": "short_enrichment_only",
+    }
+    validation_errors = _roadmap_output_validation_errors(llm_output, domain=domain)
+    if validation_errors:
+        await _insert_llm_run_best_effort(
+            session,
+            profile_id=str(profile["user_id"]),
+            roadmap_id=None,
+            prompt_name="roadmap_generation",
+            input_json=variables,
+            output_json={"template_output": llm_output, "validation_errors": validation_errors},
+            status="failed",
+            error_text="template_validation_failed:" + ";".join(validation_errors),
+        )
+        raise HTTPException(status_code=500, detail="Template roadmap validation failed")
 
-    attempt_errors: list[str] = []
-    generation_error: str | None = None
-    llm_output: dict[str, Any] | None = None
-    for attempt in range(2):
-        prompt = _build_roadmap_prompt(
+    if _roadmap_enrichment_enabled(settings):
+        enrichment_ok, enrichment_error = await _try_enrich_template_roadmap(
+            settings=settings,
             profile=profile_for_generation,
+            output=llm_output,
             domain=domain,
-            current_datetime=current_datetime,
-            style_seed=style_seed,
-            validation_errors=attempt_errors if attempt else None,
         )
-        try:
-            candidate_output = await llm_client.run_prompt(
-                prompt_name="roadmap_generation",
-                prompt=prompt,
-                variables=variables,
-            )
-        except Exception as exc:
-            attempt_errors = [f"llm_exception:{type(exc).__name__}:{exc!r}"]
-            generation_error = ";".join(attempt_errors)
-            continue
-
-        candidate_output = _prepare_roadmap_output(
-            candidate_output,
-            domain=domain,
-            style_seed=style_seed,
-        )
-        validation_errors = _roadmap_output_validation_errors(candidate_output, domain=domain)
-        if not validation_errors:
-            llm_output = candidate_output
-            generation_status = "ok"
-            generation_error = None
-            break
-
-        attempt_errors = validation_errors
-        generation_error = ";".join(validation_errors)
+        generation_status = "template_with_llm_enrichment" if enrichment_ok else "template_generated_enrichment_failed"
+        generation_error = None if enrichment_ok else enrichment_error
+        if enrichment_error:
+            llm_output["Llm_enrichment_error"] = enrichment_error
     else:
-        llm_output = _prepare_roadmap_output(
-            build_template_roadmap(profile_for_generation, now=current_datetime),
-            domain=domain,
-            style_seed=style_seed,
-        )
-        llm_output["Invalid_llm_output"] = {
-            "errors": attempt_errors,
-            "retry_count": 1,
-        }
-        generation_status = (
-            "llm_failed_template_fallback"
-            if attempt_errors and attempt_errors[0].startswith("llm_exception:")
-            else "llm_invalid_template_fallback"
-        )
+        generation_status = "template_generated"
+        generation_error = None
+        llm_output["Llm_enrichment"] = None
 
     resource_guard_report = None
-    if settings.resource_guard_enabled and generation_status == "ok":
-        original_items = llm_output.get("Roadmap_items_insert") or []
-        resource_guard_report = await guard_roadmap_items(
-            original_items,
-            timeout_seconds=settings.resource_guard_http_timeout_seconds,
-            max_html_bytes=settings.resource_guard_max_html_bytes,
-        )
-        resource_guard_report["status"] = "warnings_only"
-        resource_guard_report["reason"] = "roadmap_kept; rejected URLs are stripped from items"
-        _apply_resource_guard_report(llm_output, resource_guard_report)
-        llm_output["Resource_guard"] = resource_guard_report
-    elif settings.resource_guard_enabled:
+    if settings.resource_guard_enabled:
         resource_guard_report = {
             "classifier": "resource_quality_v1",
             "status": "skipped",
-            "reason": generation_status,
+            "reason": "template_first_generation_skips_network_resource_guard",
             "accepted_count": len(llm_output.get("Roadmap_items_insert") or []),
             "rejected_count": 0,
             "results": [],
@@ -1754,7 +1821,7 @@ async def generate_roadmap(
         prompt_name="roadmap_generation",
         input_json=variables,
         output_json=llm_output,
-        status="failed" if generation_status != "ok" else "success",
+        status="success",
         error_text=generation_error,
     )
 
