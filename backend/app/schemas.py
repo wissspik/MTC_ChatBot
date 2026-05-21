@@ -62,6 +62,13 @@ class CompleteRoadmapItemRequest(BaseModel):
     current_datetime: datetime | None = None
 
 
+class RoadmapItemResourceProgressRequest(BaseModel):
+    telegram_id: int
+    resource_id: str
+    completed: bool
+    current_datetime: datetime | None = None
+
+
 class RoadmapStatusRequest(BaseModel):
     telegram_id: int
     status: str = Field(pattern="^(draft|active|paused|completed|replaced|archived)$")

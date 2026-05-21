@@ -58,6 +58,12 @@ CREATE TABLE IF NOT EXISTS user_profile (
     }'::JSONB,
 
     global_xp INT NOT NULL DEFAULT 0 CHECK (global_xp >= 0),
+    procoins INT NOT NULL DEFAULT 50 CHECK (procoins >= 0),
+    achievements_json JSONB NOT NULL DEFAULT '{
+        "completed_courses": 0,
+        "rewarded_course_milestones": [],
+        "unlocked": []
+    }'::JSONB,
     streak_days INT NOT NULL DEFAULT 0 CHECK (streak_days >= 0),
     streak_multiplier NUMERIC(4, 2) NOT NULL DEFAULT 1.0,
     last_activity DATE,

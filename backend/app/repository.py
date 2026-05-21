@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -1179,6 +1180,285 @@ async def mark_motivation_push_status(
     row = dict(result.mappings().one())
     await session.commit()
     return row
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _split_resource_text(value: Any, *, source_type: str = "resource") -> list[dict[str, Any]]:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return []
+
+    raw_parts = re.split(r"\n+|;\s*", text_value)
+    parts = [part.strip(" -\t") for part in raw_parts if part.strip(" -\t")]
+    resources: list[dict[str, Any]] = []
+    for index, part in enumerate(parts or [text_value], start=1):
+        url_match = re.search(r"https?://\S+", part)
+        url = url_match.group(0) if url_match else None
+        title = part.replace(url, "").strip(" :-") if url else part
+        resources.append(
+            {
+                "resource_id": f"resource_{index}",
+                "title": title or f"Ресурс {index}",
+                "type": source_type,
+                "url": url,
+            }
+        )
+    return resources
+
+
+def _resource_progress_for_item(item: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    item_json = _dict(item.get("item_json") or {})
+    existing = _list(item_json.get("resources_progress"))
+    if existing:
+        resources = existing
+    else:
+        source_resources = (
+            _list(item_json.get("resources"))
+            or _list(item_json.get("Resource_list"))
+            or _list(item_json.get("resource_list"))
+            or _split_resource_text(item.get("resources"), source_type=item.get("source_type") or "resource")
+        )
+        if not source_resources:
+            source_resources = [
+                {
+                    "resource_id": "resource_1",
+                    "title": item.get("name") or "Материал",
+                    "type": item.get("source_type") or "resource",
+                    "url": None,
+                }
+            ]
+        resources = []
+        for index, resource in enumerate(source_resources, start=1):
+            if isinstance(resource, dict):
+                payload = dict(resource)
+            else:
+                payload = {"title": str(resource)}
+            payload.setdefault("resource_id", f"resource_{index}")
+            payload.setdefault("title", payload.get("name") or f"Ресурс {index}")
+            payload.setdefault("type", payload.get("source_type") or item.get("source_type") or "resource")
+            payload.setdefault("url", payload.get("link"))
+            payload.setdefault("completed", False)
+            payload.setdefault("completed_at", None)
+            resources.append(payload)
+
+    total_xp = int(item.get("xp") or 0)
+    default_xp = max(1, round(total_xp / max(1, len(resources)))) if total_xp else 0
+    normalized: list[dict[str, Any]] = []
+    for index, resource in enumerate(resources, start=1):
+        payload = dict(resource) if isinstance(resource, dict) else {"title": str(resource)}
+        payload.setdefault("resource_id", f"resource_{index}")
+        payload.setdefault("title", payload.get("name") or f"Ресурс {index}")
+        payload.setdefault("type", payload.get("source_type") or item.get("source_type") or "resource")
+        payload.setdefault("url", payload.get("link"))
+        payload["completed"] = bool(payload.get("completed"))
+        payload.setdefault("completed_at", None)
+        payload["xp"] = int(payload.get("xp") or default_xp)
+        normalized.append(payload)
+
+    item_json["resources_progress"] = normalized
+    item_json["resource_progress"] = {
+        "total": len(normalized),
+        "completed": sum(1 for resource in normalized if resource.get("completed")),
+    }
+    return item_json, normalized
+
+
+async def get_roadmap_item_resources(
+    session: AsyncSession,
+    *,
+    item_id: str,
+    profile_id: str,
+) -> dict[str, Any] | None:
+    result = await session.execute(
+        text(
+            """
+            SELECT *
+            FROM roadmap_item
+            WHERE item_id::TEXT = :item_id
+              AND profile_id = :profile_id
+            """
+        ),
+        {"item_id": item_id, "profile_id": profile_id},
+    )
+    row = result.mappings().first()
+    if not row:
+        return None
+
+    item = dict(row)
+    item_json, resources = _resource_progress_for_item(item)
+    update_result = await session.execute(
+        text(
+            """
+            UPDATE roadmap_item
+            SET item_json = CAST(:item_json AS JSONB),
+                updated_at = now()
+            WHERE item_id::TEXT = :item_id
+              AND profile_id = :profile_id
+            RETURNING *
+            """
+        ),
+        {"item_id": item_id, "profile_id": profile_id, "item_json": _json(item_json)},
+    )
+    await session.commit()
+    updated_item = dict(update_result.mappings().one())
+    return {"roadmap_item": updated_item, "resources": resources}
+
+
+async def set_roadmap_item_resource_progress(
+    session: AsyncSession,
+    *,
+    item_id: str,
+    profile_id: str,
+    resource_id: str,
+    completed: bool,
+    current_datetime: datetime | None = None,
+) -> dict[str, Any] | None:
+    now = current_datetime or datetime.now(UTC)
+    result = await session.execute(
+        text(
+            """
+            SELECT *
+            FROM roadmap_item
+            WHERE item_id::TEXT = :item_id
+              AND profile_id = :profile_id
+            """
+        ),
+        {"item_id": item_id, "profile_id": profile_id},
+    )
+    row = result.mappings().first()
+    if not row:
+        return None
+
+    item = dict(row)
+    item_json, resources = _resource_progress_for_item(item)
+    target = next((resource for resource in resources if str(resource.get("resource_id")) == resource_id), None)
+    if target is None:
+        return {"not_found": True, "available_resources": resources}
+
+    was_completed = bool(target.get("completed"))
+    xp_value = int(target.get("xp") or 0)
+    xp_delta = 0
+    completed_courses_delta = 0
+    if completed and not was_completed:
+        target["completed"] = True
+        target["completed_at"] = now.isoformat()
+        xp_delta = xp_value
+        completed_courses_delta = 1
+    elif not completed and was_completed:
+        target["completed"] = False
+        target["completed_at"] = None
+        xp_delta = -xp_value
+        completed_courses_delta = -1
+
+    completed_count = sum(1 for resource in resources if resource.get("completed"))
+    total_count = len(resources)
+    item_json["resources_progress"] = resources
+    item_json["resource_progress"] = {
+        "total": total_count,
+        "completed": completed_count,
+    }
+    new_status = "completed" if total_count and completed_count == total_count else "in_progress" if completed_count else "not_started"
+    pending_xp = sum(int(resource.get("xp") or 0) for resource in resources if resource.get("completed"))
+    completed_at = now if new_status == "completed" else None
+
+    update_item_result = await session.execute(
+        text(
+            """
+            UPDATE roadmap_item
+            SET item_json = CAST(:item_json AS JSONB),
+                status = :status,
+                pending_xp = :pending_xp,
+                completed_at = :completed_at,
+                updated_at = now()
+            WHERE item_id::TEXT = :item_id
+              AND profile_id = :profile_id
+            RETURNING *
+            """
+        ),
+        {
+            "item_id": item_id,
+            "profile_id": profile_id,
+            "item_json": _json(item_json),
+            "status": new_status,
+            "pending_xp": pending_xp,
+            "completed_at": completed_at,
+        },
+    )
+
+    profile_result = await session.execute(
+        text(
+            """
+            SELECT global_xp, procoins, achievements_json
+            FROM user_profile
+            WHERE user_id::TEXT = :profile_id
+            """
+        ),
+        {"profile_id": profile_id},
+    )
+    profile = dict(profile_result.mappings().one())
+    achievements = _dict(profile.get("achievements_json") or {})
+    achievements.setdefault("completed_courses", 0)
+    achievements.setdefault("rewarded_course_milestones", [])
+    achievements.setdefault("unlocked", [])
+
+    new_completed_courses = max(0, int(achievements.get("completed_courses") or 0) + completed_courses_delta)
+    achievements["completed_courses"] = new_completed_courses
+
+    procoins_delta = 0
+    unlocked_now: list[dict[str, Any]] = []
+    rewarded_milestones = {int(value) for value in _list(achievements.get("rewarded_course_milestones"))}
+    if completed_courses_delta > 0 and new_completed_courses > 0 and new_completed_courses % 3 == 0:
+        milestone = new_completed_courses
+        if milestone not in rewarded_milestones:
+            procoins_delta = 5
+            rewarded_milestones.add(milestone)
+            achievement = {
+                "code": f"every_3_courses_{milestone}",
+                "title": f"{milestone} курса пройдено",
+                "description": "Награда за каждые 3 завершенных материала",
+                "procoins": 5,
+                "unlocked_at": now.isoformat(),
+            }
+            unlocked_now.append(achievement)
+            achievements["unlocked"].append(achievement)
+    achievements["rewarded_course_milestones"] = sorted(rewarded_milestones)
+
+    update_profile_result = await session.execute(
+        text(
+            """
+            UPDATE user_profile
+            SET global_xp = GREATEST(0, global_xp + :xp_delta),
+                procoins = GREATEST(0, procoins + :procoins_delta),
+                achievements_json = CAST(:achievements_json AS JSONB),
+                updated_at = now()
+            WHERE user_id::TEXT = :profile_id
+            RETURNING *
+            """
+        ),
+        {
+            "profile_id": profile_id,
+            "xp_delta": xp_delta,
+            "procoins_delta": procoins_delta,
+            "achievements_json": _json(achievements),
+        },
+    )
+
+    await session.commit()
+    updated_item = dict(update_item_result.mappings().one())
+    updated_profile = dict(update_profile_result.mappings().one())
+    return {
+        "roadmap_item": updated_item,
+        "resources": resources,
+        "changed_resource": target,
+        "resource_progress": item_json["resource_progress"],
+        "xp_delta": xp_delta,
+        "procoins_delta": procoins_delta,
+        "achievements_unlocked": unlocked_now,
+        "user_profile": updated_profile,
+    }
 
 
 async def complete_roadmap_item(

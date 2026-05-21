@@ -19,7 +19,7 @@ from app.classifier import (
     get_next_profile_question,
     merge_profile_updates,
 )
-from app.db import get_session
+from app.db import ensure_db_compat, get_session
 from app.llm_client import LlmClient
 from app.prompts import load_prompt, render_prompt
 from app.resource_guard import guard_roadmap_items
@@ -31,6 +31,7 @@ from app.repository import (
     get_roadmap_feedback,
     get_roadmap_by_id,
     get_roadmap_item_by_id,
+    get_roadmap_item_resources,
     get_roadmap_for_profile,
     get_roadmap_items,
     get_roadmap_progress,
@@ -43,6 +44,7 @@ from app.repository import (
     mark_motivation_push_status,
     skip_roadmap_item,
     start_roadmap_item,
+    set_roadmap_item_resource_progress,
     update_roadmap_after_correction,
     update_roadmap_items_after_correction,
     update_roadmap_status_for_profile,
@@ -57,6 +59,7 @@ from app.schemas import (
     CompleteRoadmapItemRequest,
     GenerateRoadmapRequest,
     ProfileUpdateRequest,
+    RoadmapItemResourceProgressRequest,
     RoadmapFeedbackRequest,
     RoadmapStatusRequest,
     SendNotificationsRequest,
@@ -84,6 +87,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    await ensure_db_compat()
 
 
 def _jsonable(data: Any) -> Any:
@@ -758,6 +766,51 @@ async def get_roadmap_item_test(
         "xp_policy_json": item.get("xp_policy_json"),
     }
     return ApiResponse(data={"mini_test": _jsonable(test_payload)})
+
+
+@app.get("/api/roadmap/item/{item_id}/resources", response_model=ApiResponse)
+async def get_item_resources(
+    item_id: str,
+    telegram_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, telegram_id)
+    result = await get_roadmap_item_resources(
+        session,
+        item_id=item_id,
+        profile_id=str(profile["user_id"]),
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="ROADMAP_ITEM not found for this user")
+    return ApiResponse(data=_jsonable(result))
+
+
+@app.patch("/api/roadmap/item/{item_id}/resource", response_model=ApiResponse)
+async def patch_item_resource_progress(
+    item_id: str,
+    request: RoadmapItemResourceProgressRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    profile = await _profile_or_404(session, request.telegram_id)
+    result = await set_roadmap_item_resource_progress(
+        session,
+        item_id=item_id,
+        profile_id=str(profile["user_id"]),
+        resource_id=request.resource_id,
+        completed=request.completed,
+        current_datetime=request.current_datetime,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="ROADMAP_ITEM not found for this user")
+    if result.get("not_found"):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "RESOURCE not found",
+                "available_resources": _jsonable(result.get("available_resources") or []),
+            },
+        )
+    return ApiResponse(data=_jsonable(result))
 
 
 @app.post("/api/roadmap/item/{item_id}/start", response_model=ApiResponse)

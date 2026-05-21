@@ -32,6 +32,7 @@ async def ensure_db_compat() -> None:
                 ALTER TABLE user_profile
                 ADD COLUMN IF NOT EXISTS achievements_json JSONB NOT NULL DEFAULT '{
                     "completed_courses": 0,
+                    "rewarded_course_milestones": [],
                     "unlocked": []
                 }'::JSONB
                 """
