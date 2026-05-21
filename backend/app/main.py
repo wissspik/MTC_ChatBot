@@ -759,6 +759,78 @@ def _is_quiet_time(now: datetime, settings: dict[str, Any]) -> bool:
     return current >= start or current < end
 
 
+STAGE_TOPIC_SELECTION = "topic_selection"
+STAGE_PROFILE_QUESTIONS = "profile_questions"
+STAGE_READY_FOR_ROADMAP = "ready_for_roadmap"
+
+
+TRACK_SWITCH_MARKERS: dict[str, tuple[str, ...]] = {
+    "python_backend": ("python backend", "backend", "бекенд", "бэкенд", "fastapi", "django"),
+    "python_telegram_bots": ("telegram bot", "telegram-бот", "телеграм бот", "бот"),
+    "python_data_science": ("data science", "аналит", "данн", "machine learning"),
+    "python_automation": ("автоматизац", "скрипт", "парсинг"),
+    "frontend": ("frontend", "front-end", "фронтенд", "react", "javascript", "typescript"),
+    "ui_ux_design": ("ui/ux", "ux/ui", "figma", "фигм", "интерфейс"),
+    "smm": ("smm", "смм", "соцсет", "контент"),
+    "digital_marketing": ("digital marketing", "маркетинг", "таргет", "реклам"),
+}
+
+TOPIC_SWITCH_INTENT_MARKERS = (
+    "нет",
+    "не ",
+    "хочу",
+    "лучше",
+    "поменя",
+    "смени",
+    "другое",
+    "вместо",
+    "давай",
+)
+
+
+def _norm_profile_text(value: Any) -> str:
+    return str(value or "").casefold().replace("ё", "е").strip()
+
+
+def _profile_stage(profile: dict[str, Any]) -> str:
+    dialog_state = str(profile.get("dialog_state") or "").strip()
+    if dialog_state == "ready_for_roadmap_generation":
+        return STAGE_READY_FOR_ROADMAP
+    if is_supported_profile_goal(profile):
+        return STAGE_PROFILE_QUESTIONS
+    return STAGE_TOPIC_SELECTION
+
+
+def _detect_supported_track_in_message(message: str) -> str | None:
+    text = _norm_profile_text(message)
+    for track, markers in TRACK_SWITCH_MARKERS.items():
+        if any(marker in text for marker in markers):
+            return track
+    return None
+
+
+def _is_topic_switch_message(profile: dict[str, Any], message: str) -> bool:
+    current_track = str(profile.get("specific_track") or "").strip()
+    detected_track = _detect_supported_track_in_message(message)
+    if not detected_track or detected_track == current_track:
+        return False
+    return True
+
+
+def _profile_state_json(profile: dict[str, Any], *, stage: str, classifier_skipped: bool) -> dict[str, Any]:
+    profile_json = _as_dict(profile.get("profile_json"))
+    profile_json.update(
+        {
+            "detected_domain": profile.get("direction"),
+            "specific_track": profile.get("specific_track"),
+            "supported_topic": is_supported_profile_goal(profile),
+            "profile_stage": stage,
+            "classifier_skipped": classifier_skipped,
+        }
+    )
+    return profile_json
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -777,15 +849,45 @@ async def analyze_profile(
         first_name=request.first_name,
         last_name=request.last_name,
     )
-    classifier_output = classify_profile_message(request.user_message)
+    current_stage = _profile_stage(profile)
+    topic_switch_requested = _is_topic_switch_message(profile, request.user_message)
+    classifier_skipped = (
+        current_stage != STAGE_TOPIC_SELECTION
+        and is_supported_profile_goal(profile)
+        and not topic_switch_requested
+    )
     followup_update = classify_followup_answer(request.user_message, profile)
+    if classifier_skipped:
+        classifier_output = {
+            "User_profile_update": {},
+            "signals": {
+                "PROFILE_STAGE": current_stage,
+                "CURRENT_TRACK": profile.get("specific_track"),
+                "CLASSIFIER_SKIPPED": True,
+                "topic_switch_requested": False,
+            },
+        }
+    else:
+        classifier_output = classify_profile_message(request.user_message)
+        classifier_output.setdefault("signals", {}).update(
+            {
+                "PROFILE_STAGE": current_stage,
+                "CURRENT_TRACK": profile.get("specific_track"),
+                "CLASSIFIER_SKIPPED": False,
+                "topic_switch_requested": topic_switch_requested,
+            }
+        )
     if followup_update:
         classifier_update = classifier_output.setdefault("User_profile_update", {})
         classifier_update.update(followup_update)
         classifier_output.setdefault("signals", {})["followup_answer"] = sorted(followup_update.keys())
     classifier_profile_update = classifier_output.get("User_profile_update") or {}
 
-    topic_guard = guard_profile_topic(profile, classifier_profile_update, request.user_message)
+    topic_guard = (
+        {"allowed": True, "reason": "classifier_skipped_existing_supported_topic"}
+        if classifier_skipped
+        else guard_profile_topic(profile, classifier_profile_update, request.user_message)
+    )
     if not topic_guard["allowed"]:
         unsupported_output = build_unsupported_topic_output(
             request.user_message,
@@ -825,11 +927,74 @@ async def analyze_profile(
             }
         )
 
+    if classifier_skipped:
+        profile_update = dict(classifier_profile_update)
+        profile_snapshot = build_profile_snapshot(profile, profile_update)
+        backend_decision = get_next_profile_question(profile_snapshot)
+        next_stage = (
+            STAGE_READY_FOR_ROADMAP
+            if backend_decision["Ready_for_roadmap_generation"]
+            else STAGE_PROFILE_QUESTIONS
+        )
+        profile_update["Dialog_state"] = (
+            "ready_for_roadmap_generation"
+            if backend_decision["Ready_for_roadmap_generation"]
+            else "collecting_profile"
+        )
+        profile_update["Profile_json"] = _profile_state_json(
+            {**profile, **{"specific_track": profile_snapshot.get("specific_track"), "direction": profile_snapshot.get("direction")}},
+            stage=next_stage,
+            classifier_skipped=True,
+        )
+        profile_output = {
+            "Db_target": "USER_PROFILE",
+            "Action": "ready_for_roadmap" if backend_decision["Ready_for_roadmap_generation"] else "ask_question",
+            "Classifier_output": classifier_output,
+            "Backend_decision": backend_decision,
+            "User_profile_update": profile_update,
+            "Need_question": backend_decision["Need_question"],
+            "Next_question": backend_decision["Next_question"],
+            "Ready_for_roadmap_generation": backend_decision["Ready_for_roadmap_generation"],
+            "PROFILE_STAGE": next_stage,
+            "CURRENT_TRACK": profile_snapshot.get("specific_track"),
+            "CLASSIFIER_SKIPPED": True,
+        }
+        updated_profile = await update_user_profile(
+            session,
+            user_id=str(profile["user_id"]),
+            update=profile_update,
+        )
+        await insert_llm_run(
+            session,
+            profile_id=str(profile["user_id"]),
+            roadmap_id=None,
+            prompt_name="profile_analysis",
+            input_json={
+                "USER_MESSAGE": request.user_message,
+                "USER_PROFILE_ROW_JSON": _jsonable(profile),
+                "DIALOG_HISTORY": request.dialog_history,
+                "PROFILE_STAGE": current_stage,
+                "CURRENT_TRACK": profile.get("specific_track"),
+                "CLASSIFIER_SKIPPED": True,
+            },
+            output_json=profile_output,
+        )
+        return ApiResponse(
+            data={
+                "classifier_output": classifier_output,
+                "llm_output": profile_output,
+                "user_profile": _jsonable(updated_profile),
+            }
+        )
+
     prompt_template = load_prompt(settings.prompt_file_path, 1)
     variables = {
         "USER_MESSAGE": request.user_message,
         "USER_PROFILE_ROW_JSON": _jsonable(profile),
         "DIALOG_HISTORY": request.dialog_history,
+        "PROFILE_STAGE": current_stage,
+        "CURRENT_TRACK": profile.get("specific_track"),
+        "CLASSIFIER_SKIPPED": classifier_skipped,
     }
     prompt = render_prompt(prompt_template, variables)
 
@@ -867,6 +1032,16 @@ async def analyze_profile(
             if backend_decision["Ready_for_roadmap_generation"]
             else "collecting_profile"
         )
+        fallback_stage = (
+            STAGE_READY_FOR_ROADMAP
+            if backend_decision["Ready_for_roadmap_generation"]
+            else STAGE_PROFILE_QUESTIONS
+        )
+        profile_update["Profile_json"] = _profile_state_json(
+            profile_snapshot,
+            stage=fallback_stage,
+            classifier_skipped=classifier_skipped,
+        )
         fallback_output = {
             "Db_target": "USER_PROFILE",
             "Action": (
@@ -880,6 +1055,9 @@ async def analyze_profile(
             "Need_question": backend_decision["Need_question"],
             "Next_question": backend_decision["Next_question"],
             "Ready_for_roadmap_generation": backend_decision["Ready_for_roadmap_generation"],
+            "PROFILE_STAGE": fallback_stage,
+            "CURRENT_TRACK": profile_snapshot.get("specific_track"),
+            "CLASSIFIER_SKIPPED": classifier_skipped,
             "Fallback_reason": f"LLM request failed: {exc!r}",
         }
         updated_profile = await update_user_profile(
@@ -908,7 +1086,9 @@ async def analyze_profile(
         )
 
     llm_profile_update = llm_output.get("User_profile_update") or {}
-    llm_topic_guard = guard_profile_topic(profile, llm_profile_update, request.user_message)
+    classifier_profile_update = classifier_output.get("User_profile_update") or {}
+    guarded_profile_update = merge_profile_updates(llm_profile_update, classifier_profile_update)
+    llm_topic_guard = guard_profile_topic(profile, guarded_profile_update, request.user_message)
     if not llm_topic_guard["allowed"]:
         unsupported_output = build_unsupported_topic_output(
             request.user_message,
@@ -945,7 +1125,6 @@ async def analyze_profile(
             }
         )
 
-    classifier_profile_update = classifier_output.get("User_profile_update") or {}
     profile_update = merge_profile_updates(llm_profile_update, classifier_profile_update)
     profile_snapshot = build_profile_snapshot(profile, profile_update)
     backend_decision = get_next_profile_question(profile_snapshot)
@@ -955,12 +1134,25 @@ async def analyze_profile(
         if backend_decision["Ready_for_roadmap_generation"]
         else "collecting_profile"
     )
+    final_stage = (
+        STAGE_READY_FOR_ROADMAP
+        if backend_decision["Ready_for_roadmap_generation"]
+        else STAGE_PROFILE_QUESTIONS
+    )
+    profile_update["Profile_json"] = _profile_state_json(
+        profile_snapshot,
+        stage=final_stage,
+        classifier_skipped=classifier_skipped,
+    )
     llm_output["Classifier_output"] = classifier_output
     llm_output["Backend_decision"] = backend_decision
     llm_output["User_profile_update"] = profile_update
     llm_output["Need_question"] = backend_decision["Need_question"]
     llm_output["Next_question"] = backend_decision["Next_question"]
     llm_output["Ready_for_roadmap_generation"] = backend_decision["Ready_for_roadmap_generation"]
+    llm_output["PROFILE_STAGE"] = final_stage
+    llm_output["CURRENT_TRACK"] = profile_snapshot.get("specific_track")
+    llm_output["CLASSIFIER_SKIPPED"] = classifier_skipped
 
     updated_profile = await update_user_profile(
         session,
