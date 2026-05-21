@@ -12,7 +12,7 @@ class LlmClient:
         timeout_seconds: float = 120.0,
         use_local: bool = False,
         local_model_name: str | None = None,
-        provider: str = "openai_compatible",
+        provider: str = "ollama",
         api_base_url: str | None = None,
         api_key: str | None = None,
         model: str | None = None,
@@ -29,10 +29,10 @@ class LlmClient:
         self.timeout_seconds = timeout_seconds
         self.use_local = use_local
         self.local_model_name = local_model_name or "Qwen/Qwen2.5-7B-Instruct"
-        self.provider = (provider or "legacy").strip().lower()
+        self.provider = (provider or "ollama").strip().lower()
         self.api_base_url = (api_base_url or "").rstrip("/")
         self.api_key = api_key
-        self.model = model or "gemini-2.5-flash-lite"
+        self.model = model or "qwen2.5:7b"
         self.temperature = temperature
         self.json_mode = json_mode
         self.ollama_fallback_enabled = ollama_fallback_enabled
@@ -139,12 +139,9 @@ class LlmClient:
             )
         elif prompt_name == "roadmap_generation":
             system_content += (
-                " Roadmap_items_insert must contain 8 to 14 items. The last item must be a final "
-                "project with Source_type set to project. Motivation_pushes_insert must contain 2 to "
-                "4 items. Use exact enum codes from the prompt. Do not return a shortened roadmap. "
-                "For every external learning resource include Resource_url, Access_type, "
-                "Free_evidence, and Language_evidence. Access_type must be one of free, freemium, "
-                "paid, unknown. Prefer Russian free resources and avoid paywalled domains."
+                " Produce exactly the JSON shape requested by the user prompt. "
+                "Keep every roadmap item inside the supplied supported_domain. "
+                "Do not invent URLs or external resources. Use exact enum codes from the prompt."
             )
         return system_content
 

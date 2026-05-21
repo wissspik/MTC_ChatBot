@@ -396,23 +396,234 @@ SUPPORTED_LEARNING_AREAS = [
     "SEO",
 ]
 
+SUPPORTED_DIRECTIONS = {"programming", "design", "marketing"}
 
-def is_unsupported_initial_topic(profile: dict[str, Any], profile_update: dict[str, Any]) -> bool:
-    has_saved_goal = bool(profile.get("goal_text") or profile.get("direction") or profile.get("specific_track"))
-    has_extracted_goal = bool(
-        profile_update.get("Goal_text")
-        or profile_update.get("Direction")
-        or profile_update.get("Specific_track")
-        or profile_update.get("Target_role")
+SUPPORTED_SPECIFIC_TRACKS = {
+    "python_backend",
+    "python_telegram_bots",
+    "python_data_science",
+    "python_automation",
+    "data_science",
+    "frontend",
+    "ui_ux_design",
+    "graphic_design",
+    "smm",
+    "digital_marketing",
+    "seo",
+    "programming_general",
+}
+
+GOAL_UPDATE_KEYS = {"Goal_text", "Direction", "Specific_track", "Target_role"}
+FOLLOWUP_UPDATE_KEYS = {
+    "Current_level",
+    "Time_per_week_label",
+    "Time_per_week_value",
+    "Preferred_formats",
+    "Preference_json",
+    "Wishes",
+    "Goal_reason",
+}
+
+GOAL_INTENT_MARKERS = (
+    "хочу",
+    "науч",
+    "изуч",
+    "осво",
+    "стать",
+    "обуч",
+    "професс",
+    "карьер",
+    "работать",
+    "работу",
+    "learn",
+    "become",
+    "career",
+)
+
+SUPPORTED_TOPIC_MARKERS = (
+    "python",
+    "пайтон",
+    "backend",
+    "бэкенд",
+    "бекенд",
+    "frontend",
+    "фронтенд",
+    "fastapi",
+    "django",
+    "postgres",
+    "api",
+    "react",
+    "typescript",
+    "javascript",
+    "html",
+    "css",
+    "data science",
+    "машин",
+    "анализ данных",
+    "pandas",
+    "нейросет",
+    "ui/ux",
+    "ux/ui",
+    "figma",
+    "фигм",
+    "интерфейс",
+    "прототип",
+    "дизайн",
+    "графическ",
+    "брендинг",
+    "логотип",
+    "иллюстрац",
+    "smm",
+    "смм",
+    "соцсет",
+    "контент",
+    "digital marketing",
+    "маркетинг",
+    "таргет",
+    "реклам",
+    "seo",
+    "поиск",
+    "ключевые слов",
+    "программ",
+    "разработ",
+    "код",
+    "developer",
+)
+
+UNSUPPORTED_TOPIC_MARKERS = (
+    "осл",
+    "кататься",
+    "свар",
+    "повар",
+    "водител",
+    "таксист",
+    "юрист",
+    "адвокат",
+    "врач",
+    "медиц",
+    "стоматолог",
+    "электрик",
+    "строител",
+    "слесар",
+    "механик",
+    "парикмах",
+    "визаж",
+)
+
+
+def _profile_value(data: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _has_goal_update(profile_update: dict[str, Any]) -> bool:
+    return any(profile_update.get(key) not in (None, "") for key in GOAL_UPDATE_KEYS)
+
+
+def _has_only_followup_update(profile_update: dict[str, Any]) -> bool:
+    meaningful_keys = {key for key, value in profile_update.items() if value not in (None, "", [], {})}
+    return bool(meaningful_keys) and meaningful_keys <= FOLLOWUP_UPDATE_KEYS
+
+
+def _has_goal_intent(text: str) -> bool:
+    return _has(text, *GOAL_INTENT_MARKERS)
+
+
+def _has_supported_topic_signal(text: str) -> bool:
+    return _has(text, *SUPPORTED_TOPIC_MARKERS)
+
+
+def _has_unsupported_topic_signal(text: str) -> bool:
+    return _has(text, *UNSUPPORTED_TOPIC_MARKERS)
+
+
+def _is_supported_goal_update(profile_update: dict[str, Any]) -> bool:
+    specific_track = _profile_value(profile_update, "Specific_track", "specific_track")
+    direction = _profile_value(profile_update, "Direction", "direction")
+    target_role = _profile_value(profile_update, "Target_role", "target_role")
+    goal_text = _profile_value(profile_update, "Goal_text", "goal_text")
+
+    if specific_track:
+        return str(specific_track) in SUPPORTED_SPECIFIC_TRACKS
+    if direction:
+        return str(direction) in SUPPORTED_DIRECTIONS
+    if target_role or goal_text:
+        text = _norm(f"{goal_text or ''} {target_role or ''}")
+        return _has_supported_topic_signal(text) and not _has_unsupported_topic_signal(text)
+    return False
+
+
+def is_supported_profile_goal(profile: dict[str, Any]) -> bool:
+    specific_track = _profile_value(profile, "specific_track", "Specific_track")
+    direction = _profile_value(profile, "direction", "Direction")
+    goal_text = _profile_value(profile, "goal_text", "Goal_text")
+    target_role = _profile_value(profile, "target_role", "Target_role")
+
+    if specific_track:
+        return str(specific_track) in SUPPORTED_SPECIFIC_TRACKS
+    if direction:
+        return str(direction) in SUPPORTED_DIRECTIONS
+    if goal_text or target_role:
+        text = _norm(f"{goal_text or ''} {target_role or ''}")
+        return _has_supported_topic_signal(text) and not _has_unsupported_topic_signal(text)
+    return False
+
+
+def guard_profile_topic(
+    profile: dict[str, Any],
+    profile_update: dict[str, Any],
+    message: str | None = None,
+) -> dict[str, Any]:
+    text = _norm(message)
+    has_saved_goal = is_supported_profile_goal(profile)
+    has_any_saved_goal = bool(
+        _profile_value(profile, "goal_text", "Goal_text")
+        or _profile_value(profile, "direction", "Direction")
+        or _profile_value(profile, "specific_track", "Specific_track")
+        or _profile_value(profile, "target_role", "Target_role")
     )
-    return not has_saved_goal and not has_extracted_goal
+    has_goal_fields = _has_goal_update(profile_update)
+    has_supported_update = _is_supported_goal_update(profile_update) if has_goal_fields else False
+    only_followup_update = _has_only_followup_update(profile_update)
+    has_goal_intent = _has_goal_intent(text)
+    has_supported_message = _has_supported_topic_signal(text)
+    has_unsupported_message = _has_unsupported_topic_signal(text)
+
+    if has_any_saved_goal and not has_saved_goal:
+        return {"allowed": False, "reason": "saved_goal_unsupported"}
+
+    if has_unsupported_message and has_goal_intent and not has_supported_message:
+        return {"allowed": False, "reason": "unsupported_goal_request"}
+
+    if has_goal_fields and not has_supported_update:
+        return {"allowed": False, "reason": "unsupported_goal_update"}
+
+    if not has_any_saved_goal and not has_goal_fields:
+        return {"allowed": False, "reason": "missing_supported_goal"}
+
+    if has_goal_intent and not has_supported_message and not has_goal_fields and not only_followup_update:
+        return {"allowed": False, "reason": "unsupported_goal_intent"}
+
+    return {"allowed": True, "reason": None}
 
 
-def build_unsupported_topic_output(message: str) -> dict[str, Any]:
+def is_unsupported_initial_topic(
+    profile: dict[str, Any],
+    profile_update: dict[str, Any],
+    message: str | None = None,
+) -> bool:
+    return not guard_profile_topic(profile, profile_update, message).get("allowed", False)
+
+
+def build_unsupported_topic_output(message: str, reason: str | None = None) -> dict[str, Any]:
     return {
         "Db_target": "USER_PROFILE",
         "Action": "unsupported_topic",
         "Unsupported_topic": True,
+        "Block_reason": reason,
         "Understood_request": message,
         "Answer": (
             "Привет! Пока у нас такой темы нет, мы ее потом добавим. "

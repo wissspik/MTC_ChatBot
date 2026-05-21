@@ -100,7 +100,11 @@ def _generic_items(profile: dict[str, Any]) -> list[dict[str, Any]]:
         _item(1, skill="Goal", topic="Уточнение результата", name="Сформулировать конечный результат", source_type="practice", source_name="Свой план", resources=f"Поисковый запрос: {goal} beginner roadmap", practice="Запиши 3 измеримых результата обучения.", difficulty="beginner"),
         _item(2, skill="Basics", topic="База", name="Разобрать базовые понятия", source_type="article", source_name="Открытые материалы", resources=f"Поисковый запрос: {goal} basics free course", practice="Сделай конспект на одну страницу."),
         _item(3, skill="Practice", topic="Практика", name="Выполнить первое упражнение", source_type="practice", source_name="Открытые задания", resources=f"Поисковый запрос: {goal} practice tasks", practice="Сделай маленький результат руками."),
-        _item(4, skill="Project", topic="Мини-проект", name="Собрать учебный проект", source_type="project", source_name="Свой проект", resources=f"Итоговый мини-проект по цели: {goal}", practice="Покажи результат другому человеку и собери фидбек."),
+        _item(4, skill="Feedback", topic="Разбор ошибок", name="Найти и исправить первые слабые места", source_type="practice", source_name="Самопроверка", resources=f"Поисковый запрос: {goal} beginner mistakes checklist", practice="Составь список из 5 ошибок и исправь минимум 2 из них."),
+        _item(5, skill="Tools", topic="Инструменты", name="Освоить базовый рабочий инструмент", source_type="practice", source_name="Открытые задания", resources=f"Поисковый запрос: {goal} tools tutorial", practice="Повтори один рабочий сценарий в инструменте и сохрани результат."),
+        _item(6, skill="Case", topic="Разбор примера", name="Разобрать готовый пример", source_type="article", source_name="Открытые материалы", resources=f"Поисковый запрос: {goal} case study beginner", practice="Выпиши структуру примера: цель, шаги, результат, что можно повторить."),
+        _item(7, skill="Portfolio", topic="Мини-кейс", name="Оформить результат в мини-кейс", source_type="practice", source_name="Свой кейс", resources=f"Поисковый запрос: {goal} portfolio case template", practice="Опиши задачу, процесс, результат и следующий шаг на одной странице."),
+        _item(8, skill="Project", topic="Финальный мини-проект", name="Собрать учебный проект", source_type="project", source_name="Свой проект", resources=f"Итоговый мини-проект по цели: {goal}", practice="Покажи результат другому человеку и собери фидбек.", difficulty="intermediate", hours=3),
     ]
 
 

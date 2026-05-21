@@ -1,4 +1,7 @@
+import difflib
+import hashlib
 import json
+import re
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
@@ -19,7 +22,8 @@ from app.classifier import (
     build_unsupported_topic_output,
     classify_followup_answer,
     get_next_profile_question,
-    is_unsupported_initial_topic,
+    guard_profile_topic,
+    is_supported_profile_goal,
     merge_profile_updates,
 )
 from app.db import ensure_db_compat, get_session
@@ -167,6 +171,464 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+GENERIC_CHECKPOINT_TITLES = {
+    "основы",
+    "практика",
+    "обучение",
+    "развитие",
+    "следующий шаг",
+    "basics",
+    "practice",
+    "learning",
+    "development",
+    "next step",
+}
+ROADMAP_SOURCE_TYPES = {"article", "text", "practice", "course", "project"}
+ROADMAP_COMPLETION_TYPES = {"self_check", "quiz", "practice", "note", "project"}
+
+
+def _profile_goal_message(profile: dict[str, Any]) -> str:
+    parts = [
+        profile.get("goal_text"),
+        profile.get("direction"),
+        profile.get("specific_track"),
+        profile.get("target_role"),
+        profile.get("goal_reason"),
+        profile.get("wishes"),
+    ]
+    return " ".join(str(part) for part in parts if part)
+
+
+def _roadmap_domain_decision(profile: dict[str, Any]) -> dict[str, Any]:
+    classifier_output = classify_profile_message(_profile_goal_message(profile))
+    classifier_update = classifier_output.get("User_profile_update") or {}
+    profile_snapshot = build_profile_snapshot(profile, classifier_update)
+    domain = profile_snapshot.get("specific_track") or profile_snapshot.get("direction")
+    supported = bool(domain) and is_supported_profile_goal(profile_snapshot)
+    return {
+        "supported": supported,
+        "domain": str(domain) if domain else None,
+        "classifier_output": classifier_output,
+        "profile_snapshot": profile_snapshot,
+    }
+
+
+def _build_unsupported_goal_output(profile: dict[str, Any], reason: str) -> dict[str, Any]:
+    understood = _profile_goal_message(profile) or str(profile.get("telegram_id") or "")
+    output = build_unsupported_topic_output(understood, reason=reason)
+    output["Action"] = "unsupported_goal"
+    output["Unsupported_goal"] = True
+    return output
+
+
+def _roadmap_style_seed(profile: dict[str, Any], current_datetime: datetime) -> str:
+    seed_input = "|".join(
+        [
+            str(profile.get("user_id") or profile.get("telegram_id") or ""),
+            str(profile.get("goal_text") or ""),
+            current_datetime.isoformat(),
+        ]
+    )
+    return hashlib.sha256(seed_input.encode("utf-8")).hexdigest()[:10]
+
+
+def _compact_profile_for_prompt(profile: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "goal_text",
+        "direction",
+        "specific_track",
+        "target_role",
+        "goal_reason",
+        "current_level",
+        "time_per_week_label",
+        "time_per_week_value",
+        "preferred_formats",
+        "wishes",
+        "preference_json",
+    )
+    return {key: _jsonable(profile.get(key)) for key in keys if profile.get(key) not in (None, "", [], {})}
+
+
+def _build_roadmap_prompt(
+    *,
+    profile: dict[str, Any],
+    domain: str,
+    current_datetime: datetime,
+    style_seed: str,
+    validation_errors: list[str] | None = None,
+) -> str:
+    profile_json = json.dumps(_compact_profile_for_prompt(profile), ensure_ascii=False, default=str)
+    retry_text = ""
+    if validation_errors:
+        retry_text = (
+            "\nFIX THESE VALIDATION ERRORS: "
+            + json.dumps(validation_errors, ensure_ascii=False)
+            + "\nReturn a corrected full JSON object only."
+        )
+    checkpoints_schema = [
+        {
+            "id": f"step-{index}",
+            "title": "",
+            "status": "current" if index == 1 else "locked",
+            "progress": 40 if index == 1 else 0,
+        }
+        for index in range(1, 9)
+    ]
+    checkpoints_schema.append({"id": "goal", "title": "", "status": "goal", "progress": 0})
+    item_schema = [
+        {
+            "Step_order": index,
+            "Skill_name": "",
+            "Topic_name": "",
+            "Name": "",
+            "Description": "",
+            "Resources": "",
+            "Source_type": "project" if index == 8 else "practice",
+            "Completion_check_type": "project" if index == 8 else "practice",
+            "Practice_task": "",
+            "Item_json": {"search_query": "", "checkpoint_id": f"step-{index}"},
+        }
+        for index in range(1, 9)
+    ]
+    output_schema = {
+        "User_profile_update": {"Dialog_state": "roadmap_ready"},
+        "Roadmap_insert": {
+            "Title": "",
+            "Direction": "",
+            "Target_role": "",
+            "Level": "",
+            "Estimated_duration_weeks": 4,
+            "Hours_per_week_label": "",
+            "Route_logic": "qwen_domain_roadmap",
+            "Status": "active",
+            "Version": 1,
+            "Roadmap_json": {
+                "domain": domain,
+                "style_seed": style_seed,
+                "checkpoints": checkpoints_schema,
+            },
+        },
+        "Roadmap_items_insert": item_schema,
+        "Motivation_pushes_insert": [],
+    }
+    output_schema_json = json.dumps(output_schema, ensure_ascii=False, separators=(",", ":"))
+
+    return f"""
+Return only valid JSON. No markdown.
+Language: Russian.
+Domain lock: supported_domain="{domain}". Every step, title, task, and final project must stay inside this domain only.
+Do not create a roadmap for unrelated wishes. Do not invent URLs: set Resources="" and put search_query in Item_json.
+Time: {current_datetime.isoformat()}
+Style seed: {style_seed}. Use it to vary wording, examples, project theme, and checkpoint titles.
+
+Profile JSON:
+{profile_json}
+
+Rules:
+- Exactly 8 Roadmap_items_insert objects, Step_order 1..8.
+- Last item Source_type="project"; other Source_type is article, text, practice, or course.
+- Names and checkpoint titles must be concrete and unique.
+- Forbidden titles: Основы, Практика, Обучение, Развитие, Следующий шаг.
+- Roadmap_json.domain="{domain}" and Roadmap_json.style_seed="{style_seed}".
+- Roadmap_json.checkpoints has exactly 9 objects: step-1..step-8 plus goal.
+- Exactly one current checkpoint, progress 20..80. Locked progress=0. Completed progress=100. Last checkpoint status="goal".
+
+Fill semantic empty strings in this JSON shape. Keep Resources="" unless a free existing URL is certain.
+Do not add other top-level keys.
+{output_schema_json}
+{retry_text}
+""".strip()
+
+
+def _normalize_title(value: Any) -> str:
+    text = str(value or "").casefold().replace("ё", "е")
+    return re.sub(r"\s+", " ", re.sub(r"[^0-9a-zа-я]+", " ", text)).strip()
+
+
+def _checkpoint_title(value: dict[str, Any]) -> str:
+    return str(value.get("title") or value.get("Name") or value.get("name") or "").strip()
+
+
+def _item_title(value: dict[str, Any]) -> str:
+    return str(value.get("Name") or value.get("title") or value.get("name") or "").strip()
+
+
+def _domain_goal_title(profile: dict[str, Any], domain: str) -> str:
+    return str(profile.get("target_role") or profile.get("goal_text") or domain or "goal").strip()
+
+
+def _derive_checkpoints(output: dict[str, Any], *, domain: str) -> list[dict[str, Any]]:
+    roadmap = output.get("Roadmap_insert") if isinstance(output.get("Roadmap_insert"), dict) else {}
+    roadmap_json = roadmap.get("Roadmap_json") if isinstance(roadmap.get("Roadmap_json"), dict) else {}
+    checkpoints = roadmap_json.get("checkpoints")
+    if isinstance(checkpoints, list) and checkpoints:
+        return [checkpoint for checkpoint in checkpoints if isinstance(checkpoint, dict)]
+
+    items = output.get("Roadmap_items_insert") if isinstance(output.get("Roadmap_items_insert"), list) else []
+    derived: list[dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        step_order = item.get("Step_order") or index
+        status = "current" if index == 1 else "locked"
+        derived.append(
+            {
+                "id": f"{domain}-{step_order}",
+                "title": _item_title(item),
+                "status": status,
+                "progress": 40 if status == "current" else 0,
+            }
+        )
+    derived.append(
+        {
+            "id": f"{domain}-goal",
+            "title": str(roadmap.get("Target_role") or roadmap.get("Title") or domain),
+            "status": "goal",
+            "progress": 0,
+        }
+    )
+    return derived
+
+
+def _validate_titles(titles: list[str], prefix: str) -> list[str]:
+    errors: list[str] = []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for index, title in enumerate(titles, start=1):
+        norm = _normalize_title(title)
+        if not norm:
+            errors.append(f"{prefix}_title_missing:{index}")
+            continue
+        generic_prefix = any(
+            norm.startswith(f"{generic} ")
+            for generic in GENERIC_CHECKPOINT_TITLES
+            if len(generic.split()) == 1
+        )
+        if norm in GENERIC_CHECKPOINT_TITLES or generic_prefix:
+            errors.append(f"{prefix}_title_generic:{index}:{title}")
+        if norm in seen:
+            errors.append(f"{prefix}_title_duplicate:{index}:{title}")
+        seen.add(norm)
+        normalized.append(norm)
+
+    for left_index, left in enumerate(normalized):
+        for right_index, right in enumerate(normalized[left_index + 1 :], start=left_index + 2):
+            if len(left) < 6 or len(right) < 6:
+                continue
+            if difflib.SequenceMatcher(None, left, right).ratio() >= 0.86:
+                errors.append(f"{prefix}_title_too_similar:{left_index + 1}:{right_index}")
+    return errors
+
+
+def _roadmap_output_validation_errors(output: dict[str, Any], *, domain: str | None = None) -> list[str]:
+    errors: list[str] = []
+
+    if not isinstance(output.get("Roadmap_insert"), dict):
+        errors.append("roadmap_insert_missing")
+    else:
+        roadmap_json = _as_dict(output["Roadmap_insert"].get("Roadmap_json"))
+        output_domain = roadmap_json.get("domain") or roadmap_json.get("supported_domain")
+        if domain and output_domain and str(output_domain) != domain:
+            errors.append(f"domain_mismatch:{output_domain}")
+
+    items = output.get("Roadmap_items_insert")
+    if not isinstance(items, list):
+        errors.append("roadmap_items_insert_not_list")
+        return errors
+
+    if len(items) < 8:
+        errors.append(f"roadmap_items_too_short:{len(items)}")
+    if len(items) > 14:
+        errors.append(f"roadmap_items_too_long:{len(items)}")
+
+    if items:
+        last_item = items[-1] if isinstance(items[-1], dict) else {}
+        last_source_type = str(last_item.get("Source_type") or "").strip().lower()
+        if last_source_type != "project":
+            errors.append("final_item_must_be_project")
+
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            errors.append(f"roadmap_item_not_object:{index}")
+            continue
+        if item.get("Step_order") in [other.get("Step_order") for other in items[: index - 1] if isinstance(other, dict)]:
+            errors.append(f"roadmap_item_step_order_duplicate:{index}")
+        for field in ("Step_order", "Skill_name", "Name", "Source_type", "Completion_check_type"):
+            if item.get(field) in (None, "", []):
+                errors.append(f"roadmap_item_missing_{field}:{index}")
+
+    item_titles = [_item_title(item) for item in items if isinstance(item, dict)]
+    errors.extend(_validate_titles(item_titles, "roadmap_item"))
+
+    checkpoints = _derive_checkpoints(output, domain=domain or "domain")
+    if not checkpoints:
+        errors.append("checkpoints_missing")
+        return errors
+    if isinstance(items, list) and len(checkpoints) != len(items) + 1:
+        errors.append(f"checkpoint_count_mismatch:{len(checkpoints)}:{len(items) + 1}")
+
+    checkpoint_ids: set[str] = set()
+    current_count = 0
+    for index, checkpoint in enumerate(checkpoints, start=1):
+        checkpoint_id = str(checkpoint.get("id") or "").strip()
+        if not checkpoint_id:
+            errors.append(f"checkpoint_id_missing:{index}")
+        elif checkpoint_id in checkpoint_ids:
+            errors.append(f"checkpoint_id_duplicate:{index}:{checkpoint_id}")
+        checkpoint_ids.add(checkpoint_id)
+
+        status = str(checkpoint.get("status") or "").strip().lower()
+        progress_value = checkpoint.get("progress")
+        try:
+            progress = float(progress_value)
+        except (TypeError, ValueError):
+            progress = -1.0
+
+        if status == "completed":
+            if progress != 100:
+                errors.append(f"checkpoint_completed_progress_not_100:{index}")
+        elif status == "locked":
+            if progress != 0:
+                errors.append(f"checkpoint_locked_progress_not_0:{index}")
+        elif status == "current":
+            current_count += 1
+            if progress < 20 or progress > 80:
+                errors.append(f"checkpoint_current_progress_out_of_range:{index}")
+        elif status == "goal":
+            pass
+        else:
+            errors.append(f"checkpoint_status_invalid:{index}:{status}")
+
+    if current_count != 1:
+        errors.append(f"checkpoint_current_count:{current_count}")
+    if str(checkpoints[-1].get("status") or "").strip().lower() != "goal":
+        errors.append("checkpoint_last_must_be_goal")
+
+    checkpoint_titles = [_checkpoint_title(checkpoint) for checkpoint in checkpoints]
+    errors.extend(_validate_titles(checkpoint_titles, "checkpoint"))
+
+    return errors
+
+
+def _prepare_roadmap_output(output: dict[str, Any], *, domain: str, style_seed: str) -> dict[str, Any]:
+    roadmap = output.setdefault("Roadmap_insert", {})
+    if not isinstance(roadmap, dict):
+        roadmap = {}
+        output["Roadmap_insert"] = roadmap
+    roadmap_json = _as_dict(roadmap.get("Roadmap_json"))
+    roadmap["Roadmap_json"] = roadmap_json
+    roadmap_json["domain"] = domain
+    roadmap_json["style_seed"] = style_seed
+    roadmap["Route_logic"] = roadmap.get("Route_logic") or "qwen_domain_roadmap"
+    roadmap["Status"] = "active"
+    roadmap["Version"] = roadmap.get("Version") or 1
+
+    items = output.get("Roadmap_items_insert") if isinstance(output.get("Roadmap_items_insert"), list) else []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        try:
+            item["Step_order"] = int(item.get("Step_order") or index)
+        except (TypeError, ValueError):
+            item["Step_order"] = index
+        item["Status"] = "not_started"
+        title = _item_title(item)
+        topic = str(item.get("Topic_name") or title or item.get("Skill_name") or "").strip()
+        if topic and item.get("Topic_name") in (None, ""):
+            item["Topic_name"] = topic
+        if item.get("Skill_name") in (None, "") and (topic or title):
+            item["Skill_name"] = topic or title
+
+        source_type = str(item.get("Source_type") or "").strip().lower()
+        if index == len(items):
+            source_type = "project"
+        elif source_type not in ROADMAP_SOURCE_TYPES or source_type == "project":
+            source_type = "practice"
+        item["Source_type"] = source_type
+
+        completion_type = str(item.get("Completion_check_type") or "").strip().lower()
+        if completion_type not in ROADMAP_COMPLETION_TYPES:
+            completion_type = "project" if source_type == "project" else "practice"
+        item["Completion_check_type"] = completion_type
+        if item.get("Description") in (None, ""):
+            item["Description"] = f"Разобрать и применить: {topic or title}."
+        item["Resources"] = item.get("Resources") or ""
+        if item.get("Source_name") in (None, ""):
+            item["Source_name"] = "Самостоятельная работа"
+        if item.get("Is_free") in (None, ""):
+            item["Is_free"] = True
+        if item.get("Language") in (None, ""):
+            item["Language"] = "ru"
+        if item.get("Difficulty") in (None, ""):
+            item["Difficulty"] = "basic"
+        if item.get("Estimated_hours") in (None, ""):
+            item["Estimated_hours"] = 2.0 if source_type != "project" else 4.0
+        if item.get("Why_this_material") in (None, ""):
+            item["Why_this_material"] = "Шаг подобран под цель, уровень и поддерживаемый domain."
+        if item.get("Skill_result") in (None, ""):
+            item["Skill_result"] = f"Можешь применить тему: {topic or title}."
+        if item.get("Career_value") in (None, ""):
+            item["Career_value"] = "Закрывает практический навык для выбранной роли."
+        if item.get("Practice_task") in (None, ""):
+            item["Practice_task"] = f"Сделай небольшой результат по теме: {topic or title}."
+        if not isinstance(item.get("Self_check_questions"), list) or not item["Self_check_questions"]:
+            item["Self_check_questions"] = [
+                f"Что получилось по теме «{topic or title}»?",
+                "Как проверить результат на практике?",
+            ]
+        if not isinstance(item.get("Completion_check_json"), dict):
+            item["Completion_check_json"] = {
+                "type": completion_type,
+                "required": True,
+                "acceptance_criteria": [],
+            }
+        if item.get("Min_seconds_before_complete") in (None, ""):
+            item["Min_seconds_before_complete"] = 600
+        if item.get("Xp") in (None, ""):
+            item["Xp"] = 80 if source_type != "project" else 160
+        if item.get("Pending_xp") in (None, ""):
+            item["Pending_xp"] = item.get("Xp") or 80
+        if item.get("Verified_xp") in (None, ""):
+            item["Verified_xp"] = 0
+        if not isinstance(item.get("Xp_policy_json"), dict):
+            item["Xp_policy_json"] = {"full_xp_requires_check": True}
+        if item.get("Fraud_score") in (None, ""):
+            item["Fraud_score"] = 0
+        if item.get("Streak_multiplier") in (None, ""):
+            item["Streak_multiplier"] = 1.0
+        item_json = item.get("Item_json") if isinstance(item.get("Item_json"), dict) else {}
+        item_json["domain"] = domain
+        item_json["checkpoint_id"] = item_json.get("checkpoint_id") or f"{domain}-{style_seed}-{item['Step_order']}"
+        item_json["search_query"] = item_json.get("search_query") or " ".join(
+            part for part in (domain, item.get("Skill_name"), title) if part
+        )
+        item["Item_json"] = item_json
+
+    if not isinstance(roadmap_json.get("checkpoints"), list) or not roadmap_json["checkpoints"]:
+        roadmap_json["checkpoints"] = _derive_checkpoints(output, domain=domain)
+
+    output.setdefault("User_profile_update", {})["Dialog_state"] = "roadmap_ready"
+    output.setdefault("Motivation_pushes_insert", [])
+    return output
+
+
+def _apply_resource_guard_report(output: dict[str, Any], report: dict[str, Any]) -> None:
+    items = output.get("Roadmap_items_insert")
+    results = report.get("results") if isinstance(report, dict) else None
+    if not isinstance(items, list) or not isinstance(results, list):
+        return
+    for item, result in zip(items, results):
+        if not isinstance(item, dict) or not isinstance(result, dict):
+            continue
+        item_json = item.get("Item_json") if isinstance(item.get("Item_json"), dict) else {}
+        item_json["resource_guard"] = result
+        if result.get("decision") != "accepted" and result.get("url"):
+            item_json["rejected_resource_url"] = result.get("url")
+            item_json.setdefault("search_query", item.get("Resources") or item.get("Name") or "")
+            item["Resources"] = ""
+        item["Item_json"] = item_json
+
+
 def _parse_hhmm(value: str, fallback: time) -> time:
     try:
         hour, minute = value.split(":", 1)
@@ -215,8 +677,12 @@ async def analyze_profile(
         classifier_output.setdefault("signals", {})["followup_answer"] = sorted(followup_update.keys())
     classifier_profile_update = classifier_output.get("User_profile_update") or {}
 
-    if is_unsupported_initial_topic(profile, classifier_profile_update):
-        unsupported_output = build_unsupported_topic_output(request.user_message)
+    topic_guard = guard_profile_topic(profile, classifier_profile_update, request.user_message)
+    if not topic_guard["allowed"]:
+        unsupported_output = build_unsupported_topic_output(
+            request.user_message,
+            reason=topic_guard["reason"],
+        )
         updated_profile = await update_user_profile(
             session,
             user_id=str(profile["user_id"]),
@@ -235,15 +701,17 @@ async def analyze_profile(
             output_json={
                 "classifier_output": classifier_output,
                 "unsupported_output": unsupported_output,
+                "topic_guard": topic_guard,
             },
             status="failed",
-            error_text="unsupported_topic",
+            error_text=f"unsupported_topic:{topic_guard['reason']}",
         )
         return ApiResponse(
             data={
                 "classifier_output": classifier_output,
                 "llm_output": unsupported_output,
                 "unsupported_topic": True,
+                "block_reason": topic_guard["reason"],
                 "available_areas": unsupported_output["Available_areas"],
                 "user_profile": _jsonable(updated_profile),
             }
@@ -332,6 +800,43 @@ async def analyze_profile(
         )
 
     llm_profile_update = llm_output.get("User_profile_update") or {}
+    llm_topic_guard = guard_profile_topic(profile, llm_profile_update, request.user_message)
+    if not llm_topic_guard["allowed"]:
+        unsupported_output = build_unsupported_topic_output(
+            request.user_message,
+            reason=llm_topic_guard["reason"],
+        )
+        updated_profile = await update_user_profile(
+            session,
+            user_id=str(profile["user_id"]),
+            update=unsupported_output["User_profile_update"],
+        )
+        await insert_llm_run(
+            session,
+            profile_id=str(profile["user_id"]),
+            roadmap_id=None,
+            prompt_name="profile_analysis",
+            input_json=variables,
+            output_json={
+                "classifier_output": classifier_output,
+                "llm_output": llm_output,
+                "unsupported_output": unsupported_output,
+                "topic_guard": llm_topic_guard,
+            },
+            status="failed",
+            error_text=f"unsupported_topic:{llm_topic_guard['reason']}",
+        )
+        return ApiResponse(
+            data={
+                "classifier_output": classifier_output,
+                "llm_output": unsupported_output,
+                "unsupported_topic": True,
+                "block_reason": llm_topic_guard["reason"],
+                "available_areas": unsupported_output["Available_areas"],
+                "user_profile": _jsonable(updated_profile),
+            }
+        )
+
     classifier_profile_update = classifier_output.get("User_profile_update") or {}
     profile_update = merge_profile_updates(llm_profile_update, classifier_profile_update)
     profile_snapshot = build_profile_snapshot(profile, profile_update)
@@ -1077,14 +1582,54 @@ async def generate_roadmap(
     if not profile:
         raise HTTPException(status_code=404, detail="USER_PROFILE not found")
 
-    prompt_template = load_prompt(settings.prompt_file_path, 2)
+    domain_decision = _roadmap_domain_decision(profile)
+    if not domain_decision["supported"]:
+        unsupported_output = _build_unsupported_goal_output(
+            profile,
+            reason="classifier_no_supported_domain",
+        )
+        await _insert_llm_run_best_effort(
+            session,
+            profile_id=str(profile["user_id"]),
+            roadmap_id=None,
+            prompt_name="roadmap_generation",
+            input_json={
+                "USER_PROFILE_ROW_JSON": _jsonable(profile),
+                "DIALOG_HISTORY": request.dialog_history,
+                "classifier_output": domain_decision["classifier_output"],
+            },
+            output_json=unsupported_output,
+            status="failed",
+            error_text="unsupported_goal:classifier_no_supported_domain",
+        )
+        return ApiResponse(
+            data={
+                "generation_status": "unsupported_goal",
+                "unsupported_goal": True,
+                "classifier_output": domain_decision["classifier_output"],
+                "llm_output": unsupported_output,
+                "user_profile": _jsonable(profile),
+                "created": None,
+            }
+        )
+
+    domain = str(domain_decision["domain"])
+    profile_for_generation = domain_decision["profile_snapshot"]
+
+    profile_decision = get_next_profile_question(profile_for_generation)
+    if not profile_decision["Ready_for_roadmap_generation"]:
+        raise HTTPException(status_code=400, detail="Profile is not ready for roadmap generation")
+
     current_datetime = request.current_datetime or datetime.now(UTC)
+    style_seed = _roadmap_style_seed(profile_for_generation, current_datetime)
     variables = {
         "CURRENT_DATETIME": current_datetime.isoformat(),
-        "USER_PROFILE_ROW_JSON": _jsonable(profile),
+        "USER_PROFILE_ROW_JSON": _jsonable(profile_for_generation),
         "DIALOG_HISTORY": request.dialog_history,
+        "SUPPORTED_DOMAIN": domain,
+        "STYLE_SEED": style_seed,
+        "CLASSIFIER_OUTPUT": domain_decision["classifier_output"],
     }
-    prompt = render_prompt(prompt_template, variables)
 
     llm_client = LlmClient(
         api_llm=settings.api_llm,
@@ -1095,7 +1640,7 @@ async def generate_roadmap(
         api_base_url=settings.llm_api_base_url,
         api_key=settings.llm_api_key,
         model=settings.llm_model,
-        temperature=settings.llm_temperature,
+        temperature=0.7,
         json_mode=settings.llm_json_mode,
         ollama_fallback_enabled=settings.ollama_fallback_enabled,
         ollama_base_url=settings.ollama_base_url,
@@ -1104,50 +1649,71 @@ async def generate_roadmap(
         ollama_num_ctx=settings.ollama_num_ctx,
         ollama_num_predict=settings.ollama_num_predict,
     )
-    try:
-        llm_output = await llm_client.run_prompt(
-            prompt_name="roadmap_generation",
-            prompt=prompt,
-            variables=variables,
+
+    attempt_errors: list[str] = []
+    generation_error: str | None = None
+    llm_output: dict[str, Any] | None = None
+    for attempt in range(2):
+        prompt = _build_roadmap_prompt(
+            profile=profile_for_generation,
+            domain=domain,
+            current_datetime=current_datetime,
+            style_seed=style_seed,
+            validation_errors=attempt_errors if attempt else None,
         )
-        generation_status = "ok"
-        generation_error = None
-    except Exception as exc:
-        llm_output = build_template_roadmap(profile, now=current_datetime)
-        generation_status = "llm_failed_template_fallback"
-        generation_error = repr(exc)
+        try:
+            candidate_output = await llm_client.run_prompt(
+                prompt_name="roadmap_generation",
+                prompt=prompt,
+                variables=variables,
+            )
+        except Exception as exc:
+            attempt_errors = [f"llm_exception:{type(exc).__name__}:{exc!r}"]
+            generation_error = ";".join(attempt_errors)
+            continue
+
+        candidate_output = _prepare_roadmap_output(
+            candidate_output,
+            domain=domain,
+            style_seed=style_seed,
+        )
+        validation_errors = _roadmap_output_validation_errors(candidate_output, domain=domain)
+        if not validation_errors:
+            llm_output = candidate_output
+            generation_status = "ok"
+            generation_error = None
+            break
+
+        attempt_errors = validation_errors
+        generation_error = ";".join(validation_errors)
+    else:
+        llm_output = _prepare_roadmap_output(
+            build_template_roadmap(profile_for_generation, now=current_datetime),
+            domain=domain,
+            style_seed=style_seed,
+        )
+        llm_output["Invalid_llm_output"] = {
+            "errors": attempt_errors,
+            "retry_count": 1,
+        }
+        generation_status = (
+            "llm_failed_template_fallback"
+            if attempt_errors and attempt_errors[0].startswith("llm_exception:")
+            else "llm_invalid_template_fallback"
+        )
 
     resource_guard_report = None
     if settings.resource_guard_enabled and generation_status == "ok":
         original_items = llm_output.get("Roadmap_items_insert") or []
-        llm_metadata = {
-            key: llm_output[key]
-            for key in (
-                "_llm_provider",
-                "_llm_model",
-                "_llm_fallback_used",
-                "_llm_fallback_reason",
-            )
-            if key in llm_output
-        }
         resource_guard_report = await guard_roadmap_items(
             original_items,
             timeout_seconds=settings.resource_guard_http_timeout_seconds,
             max_html_bytes=settings.resource_guard_max_html_bytes,
         )
+        resource_guard_report["status"] = "warnings_only"
+        resource_guard_report["reason"] = "roadmap_kept; rejected URLs are stripped from items"
+        _apply_resource_guard_report(llm_output, resource_guard_report)
         llm_output["Resource_guard"] = resource_guard_report
-
-        if resource_guard_report["accepted_count"] < settings.resource_guard_min_items:
-            llm_output = build_template_roadmap(profile, now=current_datetime)
-            llm_output.update(llm_metadata)
-            llm_output["Resource_guard"] = resource_guard_report
-            generation_status = "resource_guard_template_fallback"
-            generation_error = (
-                "Resource guard accepted "
-                f"{resource_guard_report['accepted_count']} of {len(original_items)} generated items"
-            )
-        else:
-            llm_output["Roadmap_items_insert"] = resource_guard_report["items"]
     elif settings.resource_guard_enabled:
         resource_guard_report = {
             "classifier": "resource_quality_v1",

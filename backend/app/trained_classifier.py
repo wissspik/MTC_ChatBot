@@ -195,7 +195,7 @@ def _classify_preferences(message: str) -> dict[str, Any]:
 
     keyword_map = {
         "practice": ("практик", "задани", "задач", "проект", "кейс", "practice", "task", "exercise", "template", "шаблон"),
-        "article": ("стать", "читать", "текст", "документац", "конспект", "article", "docs", "guide"),
+        "article": ("статья", "статьи", "статью", "статей", "читать", "текст", "документац", "конспект", "article", "docs", "guide"),
         "video": ("видео", "youtube", "ютуб", "лекци", "video", "lecture"),
         "no_long_video": ("без длинных видео", "не люблю видео", "видео не люблю", "без видео", "without long videos", "no video"),
     }
@@ -256,6 +256,53 @@ def _track_override(message: str) -> str | None:
     return None
 
 
+def _has_supported_area_signal(message: str) -> bool:
+    text = _norm(message)
+    markers = (
+        "python",
+        "пайтон",
+        "backend",
+        "бэкенд",
+        "бекенд",
+        "frontend",
+        "фронтенд",
+        "fastapi",
+        "django",
+        "postgres",
+        "api",
+        "react",
+        "typescript",
+        "javascript",
+        "html",
+        "css",
+        "data science",
+        "машинное обучение",
+        "анализ данных",
+        "pandas",
+        "нейросет",
+        "ui/ux",
+        "ux/ui",
+        "figma",
+        "фигм",
+        "интерфейс",
+        "прототип",
+        "графическ",
+        "брендинг",
+        "логотип",
+        "иллюстрац",
+        "smm",
+        "соцсет",
+        "контент",
+        "digital marketing",
+        "таргет",
+        "реклам",
+        "seo",
+        "поиск",
+        "ключевые слов",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _broad_goal_update(message: str) -> dict[str, Any]:
     text = _norm(message)
     if any(marker in text for marker in ("программ", "писать код", "it", "разработ", "developer", "код")):
@@ -305,7 +352,10 @@ def classify_profile_message_ml(message: str) -> dict[str, Any]:
     preferences = _classify_preferences(message)
 
     update: dict[str, Any] = {}
-    selected_track = _track_override(message) or (track["label"] if track["confidence"] >= 0.65 else None)
+    explicit_track = _track_override(message)
+    selected_track = explicit_track
+    if selected_track is None and _has_supported_area_signal(message) and track["confidence"] >= 0.85:
+        selected_track = track["label"]
     selected_level = _level_override(message)
 
     if selected_track in TRACK_META:
