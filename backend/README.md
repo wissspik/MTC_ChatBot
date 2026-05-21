@@ -1,84 +1,99 @@
 # Backend
 
-FastAPI backend для Telegram-бота образовательных roadmap.
+FastAPI backend для проекта «Прогрессоры».
 
-## Запуск
+Backend отвечает за хранение профиля пользователя, генерацию roadmap, работу с прогрессом, XP, мини-проверками, AI-мастером и уведомлениями.
+
+## Что внутри
+
+- `FastAPI` — HTTP API.
+- `PostgreSQL` — база данных.
+- `SQLAlchemy async` — работа с БД.
+- `LLM client` — обращение к внешней LLM или локальной модели.
+- `Telegram client` — отправка уведомлений через Telegram Bot API.
+
+## Запуск через Docker
+
+Из корня проекта:
 
 ```bash
+cp .env.example .env
 docker compose up --build
 ```
 
-API будет доступен на:
+На Windows PowerShell:
 
-```text
-http://localhost:8000
+```powershell
+Copy-Item .env.example .env
+docker compose up --build
 ```
 
-Postgres поднимется с таблицами из `backend/db/schema.sql`.
-
-## ENV
+После запуска:
 
 ```text
-API_LLM=http://host.docker.internal:8080/dump
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token
-TELEGRAM_API_BASE=https://api.telegram.org
-POSTGRES_DB=progressors
+Backend: http://localhost:8000
+Swagger: http://localhost:8000/docs
+PostgreSQL: localhost:5432
+```
+
+## Переменные окружения
+
+Минимальные переменные для локального запуска:
+
+```text
 POSTGRES_USER=progressors
 POSTGRES_PASSWORD=progressors
-BACKEND_PORT=8000
+POSTGRES_DB=progressors
 POSTGRES_PORT=5432
+
+BACKEND_PORT=8000
+
+LLM_PROVIDER=gemini
+LLM_API_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+LLM_API_KEY=
+LLM_MODEL=gemini-2.5-flash-lite
+
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_API_BASE=https://api.telegram.org
 ```
 
-`API_LLM` — внешний endpoint LLM. Backend отправляет туда JSON:
+Если `TELEGRAM_BOT_TOKEN` пустой, backend можно тестировать через Swagger, но реальные Telegram-уведомления отправляться не будут.
 
-```json
-{
-  "prompt_name": "profile_analysis",
-  "prompt": "уже подставленный текст Prompt 1 или Prompt 2",
-  "variables": {}
-}
-```
+## Основные API
 
-Ожидаемый ответ:
-
-```json
-{
-  "output": {}
-}
-```
-
-Если поле `output` отсутствует, backend воспринимает весь JSON-ответ как ответ LLM.
-
-## Ручка 1: анализ профиля
+### Анализ профиля пользователя
 
 ```http
 POST /api/profile/analyze
 ```
+
+Пример запроса:
 
 ```json
 {
   "telegram_id": 123,
   "username": "user",
   "first_name": "User",
-  "user_message": "Хочу изучить Python backend, я новичок",
+  "user_message": "Хочу стать Python backend-разработчиком, я новичок",
   "dialog_history": []
 }
 ```
 
 Что делает:
 
-- создает или обновляет `user_profile`;
-- берет `Prompt 1` из `INSTUC.txt`;
-- отправляет prompt + variables на `API_LLM`;
-- применяет `User_profile_update`;
-- пишет лог в `llm_run`.
+- создает или обновляет профиль пользователя;
+- извлекает цель, уровень, время и предпочтения;
+- если данных не хватает, возвращает следующий вопрос;
+- если профиль готов, разрешает генерацию roadmap.
 
-## Ручка 2: генерация roadmap
+### Генерация roadmap
 
 ```http
 POST /api/roadmap/generate
 ```
 
+Пример запроса:
+
 ```json
 {
   "telegram_id": 123,
@@ -88,41 +103,39 @@ POST /api/roadmap/generate
 
 Что делает:
 
-- берет заполненный `user_profile`;
-- берет `Prompt 2` из `INSTUC.txt`;
-- отправляет prompt + variables на `API_LLM`;
-- сохраняет `roadmap`, `roadmap_item`, `motivation_push`;
-- обновляет `user_profile`;
-- пишет лог в `llm_run`.
+- берет заполненный профиль пользователя;
+- формирует персональный roadmap;
+- сохраняет маршрут и шаги в БД;
+- создает задания, вопросы самопроверки и правила XP;
+- планирует мотивационные уведомления.
 
-## Ручка 3: фидбек и коррекция roadmap
+### Получение текущего roadmap
+
+```http
+GET /api/roadmap/current?telegram_id=123
+```
+
+Возвращает текущий маршрут, шаги и прогресс пользователя.
+
+### Фидбек и коррекция roadmap
 
 ```http
 POST /api/roadmap/feedback
 ```
 
+Пример:
+
 ```json
 {
   "telegram_id": 123,
   "roadmap_id": "uuid",
-  "item_ids": ["uuid-1", "uuid-2"],
+  "item_ids": ["uuid-1"],
   "feedback_type": "too_hard",
-  "feedback_text": "Эти два шага слишком сложные, хочу проще и больше практики",
+  "feedback_text": "Этот шаг слишком сложный, хочу проще и больше практики",
   "max_items_to_change": 2,
   "dialog_history": []
 }
 ```
-
-Что делает:
-
-- сохраняет фидбек в `roadmap_feedback`;
-- берет `Prompt 3` из `INSTUC.txt`;
-- передает LLM текущий `user_profile`, `roadmap`, выбранные `roadmap_item` и историю фидбека;
-- LLM может изменить максимум `max_items_to_change`, сейчас 1-2 ноды;
-- применяет UPDATE к `roadmap_item`;
-- при необходимости обновляет `roadmap.roadmap_json`;
-- создает новые `motivation_push`;
-- пишет лог в `llm_run` с `prompt_name = roadmap_correction`.
 
 Допустимые `feedback_type`:
 
@@ -135,93 +148,59 @@ already_completed
 change_request
 ```
 
-## Ручка 4: отправка запланированных уведомлений
+### AI-мастер
+
+```http
+POST /api/ai-master/ask
+```
+
+AI-мастер отвечает на вопросы пользователя по его текущему профилю, roadmap и прогрессу.
+
+### Уведомления
 
 ```http
 POST /api/notifications/send-due
 ```
 
-Отправить due-пуши всем пользователям:
+Отправляет запланированные мотивационные пуши. Поддерживает `dry_run`, чтобы проверить логику без реальной отправки.
 
-```json
-{
-  "limit": 50
-}
-```
-
-Отправить due-пуши одному пользователю:
+Пример:
 
 ```json
 {
   "telegram_id": 123,
-  "limit": 10
-}
-```
-
-Проверить без реальной отправки:
-
-```json
-{
-  "telegram_id": 123,
+  "limit": 10,
   "dry_run": true
 }
 ```
 
-Что делает:
+## Мини-проверки и XP
 
-- берет `motivation_push` со статусом `planned` и `scheduled_at <= now`;
-- если указан `telegram_id`, отправляет только этому пользователю;
-- проверяет `push_enabled`;
-- соблюдает `quiet_hours`;
-- соблюдает `max_pushes_per_day`;
-- отправляет сообщение через Telegram Bot API;
-- меняет статус на `sent`, `failed`, `rate_limited`, `skipped_by_quiet_hours` или `cancelled`.
+Каждый шаг roadmap может содержать мини-проверку:
 
-Для реальной отправки нужен `TELEGRAM_BOT_TOKEN`. Для `dry_run` токен не нужен.
+- короткие вопросы по теме;
+- открытый ответ;
+- практическое задание;
+- чеклист результата.
 
-## Возврат skipped-ноды в маршрут
+XP начисляется не просто за нажатие кнопки, а за подтвержденное прохождение шага. Это делает прогресс честнее: пользователь изучает материал, выполняет действие и только потом получает награду.
 
-```http
-POST /api/roadmap/item/{item_id}/unskip
+## Локальный запуск без Docker
+
+Нужен Python 3.11+ и запущенный PostgreSQL.
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-```json
-{
-  "telegram_id": 123,
-  "start_now": false,
-  "note_text": "Вернулся к этому шагу"
-}
+Для Linux/macOS активация окружения:
+
+```bash
+source .venv/bin/activate
 ```
 
-Что делает:
-
-- работает только для `roadmap_item.status = skipped`;
-- возвращает ноду в `not_started`;
-- если `start_now = true`, сразу ставит `in_progress`;
-- очищает `completed_at`;
-- возвращает обновленную `roadmap_item` и `progress`.
-
-## Завершение roadmap
-
-```http
-POST /api/roadmap/{roadmap_id}/complete
-```
-
-```json
-{
-  "telegram_id": 123,
-  "allow_skipped": true,
-  "force": false
-}
-```
-
-Что делает:
-
-- проверяет, что roadmap принадлежит пользователю;
-- завершает roadmap статусом `completed`;
-- по умолчанию skipped-ноды не блокируют завершение;
-- `not_started`, `in_progress`, `pending_check`, `expired`, `replaced` блокируют завершение;
-- если `force = true`, завершает roadmap даже с незавершенными нодами;
-- возвращает `roadmap`, `progress` и `completion_stats`.
-
-Если есть незавершенные ноды и `force = false`, вернет `409`.
+Перед запуском задайте `DATABASE_URL` или используйте переменные из `.env.example`.
