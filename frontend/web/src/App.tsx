@@ -78,6 +78,17 @@ type TelegramUser = {
   last_name?: string;
 };
 
+type TelegramWebApp = {
+  initDataUnsafe?: {
+    user?: TelegramUser;
+  };
+  ready?: () => void;
+  expand?: () => void;
+  close?: () => void;
+  openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
+  openTelegramLink?: (url: string) => void;
+};
+
 type LaidOutRoadmapNode = RoadmapNode & {
   x: number;
   y: number;
@@ -251,22 +262,18 @@ function getInitialTab(): TabId {
   return tab === "profile" || tab === "mentor" || tab === "roadmap" ? tab : "roadmap";
 }
 
-function getTelegramUser(): TelegramUser {
-  const telegram = (
+function getTelegramWebApp(): TelegramWebApp | undefined {
+  return (
     window as Window & {
       Telegram?: {
-        WebApp?: {
-          initDataUnsafe?: {
-            user?: TelegramUser;
-          };
-          ready?: () => void;
-          expand?: () => void;
-          close?: () => void;
-          openTelegramLink?: (url: string) => void;
-        };
+        WebApp?: TelegramWebApp;
       };
     }
   ).Telegram?.WebApp;
+}
+
+function getTelegramUser(): TelegramUser {
+  const telegram = getTelegramWebApp();
 
   telegram?.ready?.();
   telegram?.expand?.();
@@ -275,16 +282,7 @@ function getTelegramUser(): TelegramUser {
 }
 
 function openTelegramChat() {
-  const telegram = (
-    window as Window & {
-      Telegram?: {
-        WebApp?: {
-          close?: () => void;
-          openTelegramLink?: (url: string) => void;
-        };
-      };
-    }
-  ).Telegram?.WebApp;
+  const telegram = getTelegramWebApp();
   const botUsername = import.meta.env.VITE_BOT_USERNAME;
 
   if (telegram?.close) {
@@ -294,6 +292,24 @@ function openTelegramChat() {
 
   if (botUsername) {
     window.location.href = `https://t.me/${botUsername}`;
+  }
+}
+
+function openExternalUrl(url: string) {
+  const normalizedUrl = normalizeResourceUrl(url);
+  if (!normalizedUrl) {
+    return;
+  }
+
+  const telegram = getTelegramWebApp();
+  if (telegram?.openLink) {
+    telegram.openLink(normalizedUrl, { try_instant_view: false });
+    return;
+  }
+
+  const opened = window.open(normalizedUrl, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    window.location.href = normalizedUrl;
   }
 }
 
@@ -449,6 +465,25 @@ function getMaterialMeta(item: RoadmapItem) {
   return `${typeMap[item.source_type] ?? "Материал"}${duration}`;
 }
 
+function normalizeResourceUrl(value?: string | null) {
+  if (!value) {
+    return undefined;
+  }
+
+  const match = value.match(/https?:\/\/[^\s<>"')\]]+/i);
+  if (!match) {
+    return undefined;
+  }
+
+  const cleaned = match[0].replace(/[.,;:!?]+$/g, "");
+  try {
+    const url = new URL(cleaned);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function getRoadmapNodes(state: ProfileState | null): RoadmapNode[] {
   if (!state?.items.length) {
     return roadmapNodes;
@@ -472,7 +507,7 @@ function getRoadmapNodes(state: ProfileState | null): RoadmapNode[] {
             title: item.source_name || item.topic_name || item.name,
             meta: getMaterialMeta(item),
             icon: item.source_type === "practice" || item.source_type === "project" ? LayoutGrid : BookOpen,
-            url: item.resources?.startsWith("http") ? item.resources : undefined,
+            url: normalizeResourceUrl(item.resources),
           },
         ],
         rewards: {
@@ -1810,15 +1845,14 @@ function RoadmapNodeSheet({
                     );
 
                     return material.url ? (
-                      <a
-                        className="node-material block min-h-[108px] rounded-[20px] p-3 text-left"
-                        href={material.url}
+                      <button
+                        className="node-material block min-h-[108px] w-full appearance-none rounded-[20px] p-3 text-left"
                         key={material.title}
-                        target="_blank"
-                        rel="noreferrer"
+                        type="button"
+                        onClick={() => openExternalUrl(material.url as string)}
                       >
                         {materialContent}
-                      </a>
+                      </button>
                     ) : (
                       <div className="node-material min-h-[108px] rounded-[20px] p-3 text-left" key={material.title}>
                         {materialContent}

@@ -26,9 +26,12 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "http://localhost:5173").rstrip("/")
 
-MAKE_TRACK = "Сделать трек"
-INFO = "Инфо"
-CANCEL = "Отмена"
+MAKE_TRACK = "🚀 Сделать трек"
+INFO = "ℹ️ Инфо"
+CANCEL = "↩️ Отмена"
+LEGACY_MAKE_TRACK = "Сделать трек"
+LEGACY_INFO = "Инфо"
+LEGACY_CANCEL = "Отмена"
 
 
 @dataclass
@@ -47,14 +50,14 @@ def main_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=INFO)],
         ],
         resize_keyboard=True,
-        input_field_placeholder="Выбери действие",
+        input_field_placeholder="Выбери, что делаем дальше",
     )
 
 
 def question_keyboard(buttons: list[str] | None = None, allow_multiple: bool = False) -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(text=button)] for button in buttons or []]
     rows.append([KeyboardButton(text=CANCEL)])
-    placeholder = "Можно выбрать несколько и написать через запятую" if allow_multiple else "Ответь на вопрос"
+    placeholder = "Можно выбрать несколько вариантов или написать свой ответ" if allow_multiple else "Напиши ответ или нажми кнопку"
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,
@@ -72,13 +75,13 @@ def webapp_keyboard(telegram_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Открыть roadmap",
+                    text="🗺 Открыть roadmap",
                     web_app=WebAppInfo(url=webapp_url(telegram_id, "roadmap")),
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="Профиль",
+                    text="👤 Профиль",
                     web_app=WebAppInfo(url=webapp_url(telegram_id, "profile")),
                 )
             ],
@@ -123,14 +126,14 @@ def unsupported_topic_message(data: dict[str, Any]) -> str | None:
         return None
 
     available = data.get("available_areas") or llm_output.get("Available_areas") or []
-    answer = llm_output.get("Answer") or "Привет! Пока у нас такой темы нет, мы ее потом добавим."
+    answer = llm_output.get("Answer") or "Пока я не умею собрать хороший трек по этой теме 😔 Но мы можем выбрать одно из доступных направлений."
     if available:
-        answer = f"{answer}\n\nДоступные области:\n" + "\n".join(f"• {area}" for area in available)
+        answer = f"{answer}\n\nМожно начать с этих направлений:\n" + "\n".join(f"• {area}" for area in available)
     return answer
 
 
 async def finish_roadmap(message: Message, telegram_id: int, state: TrackSession) -> None:
-    await message.answer("Профиль собран. Генерирую персональный roadmap...", reply_markup=ReplyKeyboardRemove())
+    await message.answer("✅ Профиль собран. Сейчас соберу персональный roadmap и подберу материалы...", reply_markup=ReplyKeyboardRemove())
     data = await api_request(
         "POST",
         "/api/roadmap/generate",
@@ -146,10 +149,10 @@ async def finish_roadmap(message: Message, telegram_id: int, state: TrackSession
     state.collecting = False
     state.dialog_history.clear()
     await message.answer(
-        f"Готово: {title}\nОткрой карту во фронтенде.",
+        f"🎉 Готово: {title}\nОткрой карту и начинай первый шаг.",
         reply_markup=webapp_keyboard(telegram_id),
     )
-    await message.answer("Главное меню:", reply_markup=main_keyboard())
+    await message.answer("Главное меню на месте 👇", reply_markup=main_keyboard())
 
 
 async def process_profile_answer(message: Message) -> None:
@@ -178,7 +181,7 @@ async def process_profile_answer(message: Message) -> None:
 
     need_question, next_question = next_question_from(data)
     if need_question and next_question:
-        question_text = next_question.get("Text") or "Уточни, пожалуйста, еще один момент."
+        question_text = next_question.get("Text") or "Уточни, пожалуйста, еще один момент 🙌"
         buttons = next_question.get("Buttons") or []
         allow_multiple = bool(next_question.get("Allow_multiple"))
         state.dialog_history.append({"role": "assistant", "content": question_text})
@@ -193,15 +196,15 @@ async def process_profile_answer(message: Message) -> None:
 
 async def start(message: Message) -> None:
     await message.answer(
-        "Привет! Я помогу собрать учебный трек и открыть его во фронтенде.",
+        "Привет! 👋 Я помогу собрать учебный трек под твою цель, уровень и свободное время.",
         reply_markup=main_keyboard(),
     )
 
 
 async def show_info(message: Message) -> None:
     await message.answer(
-        "Я собираю цель, уровень, время и формат обучения, затем строю roadmap. "
-        "После генерации откроется WebApp с картой прогресса.",
+        "Я задам несколько коротких вопросов, соберу профиль и построю roadmap с материалами и практикой. "
+        "Потом откроешь карту прогресса в WebApp 🗺",
         reply_markup=main_keyboard(),
     )
 
@@ -210,7 +213,7 @@ async def start_track(message: Message) -> None:
     payload = user_payload(message)
     sessions[payload["telegram_id"]] = TrackSession(collecting=True)
     await message.answer(
-        "Какой навык или профессию хочешь освоить? Например: Python backend, UI/UX, SMM.",
+        "С чего начнем? Напиши навык или профессию, которую хочешь освоить.\n\nНапример: Python backend, UI/UX, SMM ✍️",
         reply_markup=question_keyboard(),
     )
 
@@ -218,7 +221,7 @@ async def start_track(message: Message) -> None:
 async def cancel(message: Message) -> None:
     payload = user_payload(message)
     sessions.pop(payload["telegram_id"], None)
-    await message.answer("Ок, сбор трека остановлен.", reply_markup=main_keyboard())
+    await message.answer("Ок, остановил сбор трека. Можно начать заново в любой момент 👍", reply_markup=main_keyboard())
 
 
 async def handle_text(message: Message) -> None:
@@ -226,13 +229,13 @@ async def handle_text(message: Message) -> None:
     payload = user_payload(message)
     state = sessions.get(payload["telegram_id"])
 
-    if text == MAKE_TRACK:
+    if text in {MAKE_TRACK, LEGACY_MAKE_TRACK}:
         await start_track(message)
         return
-    if text == INFO:
+    if text in {INFO, LEGACY_INFO}:
         await show_info(message)
         return
-    if text == CANCEL:
+    if text in {CANCEL, LEGACY_CANCEL}:
         await cancel(message)
         return
     if state and state.collecting:
@@ -240,12 +243,12 @@ async def handle_text(message: Message) -> None:
             await process_profile_answer(message)
         except Exception as exc:
             await message.answer(
-                f"Не получилось связаться с backend: {exc}",
+                f"Не получилось связаться с backend 😕\n\n{exc}",
                 reply_markup=main_keyboard(),
             )
         return
 
-    await message.answer("Выбери действие на клавиатуре.", reply_markup=main_keyboard())
+    await message.answer("Выбери действие на клавиатуре 👇", reply_markup=main_keyboard())
 
 
 async def main() -> None:
