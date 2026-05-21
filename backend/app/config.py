@@ -14,7 +14,8 @@ DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:3000,"
     "http://127.0.0.1:5173,"
     "http://127.0.0.1:5174,"
-    "http://127.0.0.1:8080"
+    "http://127.0.0.1:8080,"
+    "https://web-oty1m0osq-denrok15s-projects.vercel.app"
 )
 
 
@@ -49,7 +50,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=120.0, alias="LLM_TIMEOUT_SECONDS")
     cors_origins: str = Field(default=DEFAULT_CORS_ORIGINS, alias="CORS_ORIGINS")
     cors_origin_regex: str | None = Field(
-        default=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+        default=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https://.*\.vercel\.app",
         alias="CORS_ORIGIN_REGEX",
     )
 

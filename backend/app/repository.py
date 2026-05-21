@@ -1473,7 +1473,7 @@ async def complete_roadmap_item(
     current_datetime: datetime | None = None,
 ) -> dict[str, Any]:
     """
-    Complete a roadmap item and calculate XP based on xp_policy_json.
+    Complete a roadmap item without validation checks.
     Returns updated item with XP calculations.
     """
     now = current_datetime or datetime.now(UTC)
@@ -1490,66 +1490,30 @@ async def complete_roadmap_item(
         return {}
     
     item = dict(row)
-    
-    # Parse policies
-    xp_policy = _dict(item.get("xp_policy_json") or {})
-    completion_check = _dict(item.get("completion_check_json") or {})
-    min_seconds = item.get("min_seconds_before_complete") or 0
     total_xp = item.get("xp") or 0
-    completion_type = item.get("completion_check_type") or "self_check"
-    
-    # Calculate pending_xp based on spent time and answers
-    has_answers = (
-        (isinstance(answers, dict) and answers) or 
-        (isinstance(answers, list) and len(answers) > 0)
-    )
-    
-    pending_xp = 0
-    new_status = "pending_check"
-    
-    if not has_answers:
-        # Only clicked "Done" without answers: 30% XP (click_only_max_percent)
-        click_only_pct = xp_policy.get("click_only_max_percent", 30)
-        pending_xp = int(total_xp * click_only_pct / 100)
-        new_status = "pending_check"
-    else:
-        # Has answers: calculate XP based on parts
-        parts = xp_policy.get("parts", {})
-        xp_earned_pct = 0
-        
-        # Add for min_time
-        if spent_seconds >= min_seconds:
-            xp_earned_pct += parts.get("min_time", 20)
-        
-        # Add for quiz/self_check
-        if completion_type in ["quiz", "self_check"]:
-            xp_earned_pct += parts.get("quiz_or_self_check", 50)
-        
-        # Add for practice/note
-        if completion_type in ["practice", "note"]:
-            xp_earned_pct += parts.get("practice_or_note", 30)
-        
-        pending_xp = int(total_xp * xp_earned_pct / 100)
-        new_status = "completed"
+    previous_pending_xp = item.get("pending_xp") or 0
+    already_completed = item.get("status") in {"completed", "completed_late"}
+    pending_xp = total_xp
+    xp_delta = 0 if already_completed else max(0, pending_xp - previous_pending_xp)
+    user_note = note_text or practice_result
     
     # Update item
     update_result = await session.execute(
         text(
             """
             UPDATE roadmap_item
-            SET status = :status,
+            SET status = 'completed',
                 pending_xp = :pending_xp,
-                user_note = :user_note,
-                completed_at = :completed_at,
+                user_note = COALESCE(:user_note, user_note),
+                completed_at = COALESCE(completed_at, :completed_at),
                 updated_at = now()
             WHERE item_id::TEXT = :item_id AND profile_id = :profile_id
             RETURNING *
             """
         ),
         {
-            "status": new_status,
             "pending_xp": pending_xp,
-            "user_note": note_text or practice_result,
+            "user_note": user_note,
             "completed_at": now,
             "item_id": item_id,
             "profile_id": profile_id,
@@ -1568,8 +1532,7 @@ async def complete_roadmap_item(
     profile_row = profile_result.mappings().first()
     if profile_row:
         current_xp = profile_row["global_xp"] or 0
-        # Add pending_xp to global (or could use verified_xp when reviewed)
-        new_global_xp = current_xp + pending_xp
+        new_global_xp = current_xp + xp_delta
         
         await session.execute(
             text(
