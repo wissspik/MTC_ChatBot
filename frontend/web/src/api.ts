@@ -261,6 +261,16 @@ export function skipRoadmapItem(
   });
 }
 
+export function unskipRoadmapItem(telegramId: number, itemId: string) {
+  return apiRequest<{ roadmap_item: RoadmapItem }>(`/api/roadmap/item/${itemId}/unskip`, {
+    method: "POST",
+    body: JSON.stringify({
+      telegram_id: telegramId,
+      current_datetime: new Date().toISOString(),
+    }),
+  });
+}
+
 export function completeRoadmapItem(
   telegramId: number,
   itemId: string,

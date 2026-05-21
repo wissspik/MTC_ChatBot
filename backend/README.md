@@ -178,3 +178,50 @@ POST /api/notifications/send-due
 - меняет статус на `sent`, `failed`, `rate_limited`, `skipped_by_quiet_hours` или `cancelled`.
 
 Для реальной отправки нужен `TELEGRAM_BOT_TOKEN`. Для `dry_run` токен не нужен.
+
+## Возврат skipped-ноды в маршрут
+
+```http
+POST /api/roadmap/item/{item_id}/unskip
+```
+
+```json
+{
+  "telegram_id": 123,
+  "start_now": false,
+  "note_text": "Вернулся к этому шагу"
+}
+```
+
+Что делает:
+
+- работает только для `roadmap_item.status = skipped`;
+- возвращает ноду в `not_started`;
+- если `start_now = true`, сразу ставит `in_progress`;
+- очищает `completed_at`;
+- возвращает обновленную `roadmap_item` и `progress`.
+
+## Завершение roadmap
+
+```http
+POST /api/roadmap/{roadmap_id}/complete
+```
+
+```json
+{
+  "telegram_id": 123,
+  "allow_skipped": true,
+  "force": false
+}
+```
+
+Что делает:
+
+- проверяет, что roadmap принадлежит пользователю;
+- завершает roadmap статусом `completed`;
+- по умолчанию skipped-ноды не блокируют завершение;
+- `not_started`, `in_progress`, `pending_check`, `expired`, `replaced` блокируют завершение;
+- если `force = true`, завершает roadmap даже с незавершенными нодами;
+- возвращает `roadmap`, `progress` и `completion_stats`.
+
+Если есть незавершенные ноды и `force = false`, вернет `409`.

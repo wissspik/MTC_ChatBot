@@ -27,6 +27,7 @@ import {
 import avatarUrl from "./assets/ava.png";
 import backgroundUrl from "./assets/background.png";
 import catUrl from "./assets/Cat.png";
+import happyCatUrl from "./assets/Happy_Cat (1).png";
 import profileCatUrl from "./assets/cat_with_procents.png";
 import completedNodeUrl from "./assets/completed_node.png";
 import currentNodeUrl from "./assets/current_node.png";
@@ -43,10 +44,11 @@ import {
   sendRoadmapFeedback,
   skipRoadmapItem,
   startRoadmapItem,
+  unskipRoadmapItem,
   UserProfile,
 } from "./api";
 
-type NodeStatus = "completed" | "current" | "locked" | "goal";
+type NodeStatus = "completed" | "current" | "locked" | "skipped" | "goal";
 type TabId = "profile" | "roadmap" | "mentor";
 type LabelSide = "left" | "right" | "top";
 
@@ -193,6 +195,7 @@ const nodeImages: Partial<Record<NodeStatus, string>> = {
   completed: completedNodeUrl,
   current: currentNodeUrl,
   locked: lockedNodeUrl,
+  skipped: lockedNodeUrl,
 };
 
 function normalizeLabelSide(x: number, side: LabelSide): LabelSide {
@@ -258,6 +261,8 @@ function getTelegramUser(): TelegramUser {
           };
           ready?: () => void;
           expand?: () => void;
+          close?: () => void;
+          openTelegramLink?: (url: string) => void;
         };
       };
     }
@@ -267,6 +272,29 @@ function getTelegramUser(): TelegramUser {
   telegram?.expand?.();
 
   return telegram?.initDataUnsafe?.user ?? {};
+}
+
+function openTelegramChat() {
+  const telegram = (
+    window as Window & {
+      Telegram?: {
+        WebApp?: {
+          close?: () => void;
+          openTelegramLink?: (url: string) => void;
+        };
+      };
+    }
+  ).Telegram?.WebApp;
+  const botUsername = import.meta.env.VITE_BOT_USERNAME;
+
+  if (telegram?.close) {
+    telegram.close();
+    return;
+  }
+
+  if (botUsername) {
+    window.location.href = `https://t.me/${botUsername}`;
+  }
 }
 
 function getTelegramId(user: TelegramUser) {
@@ -356,20 +384,37 @@ function getProfileSkills(state: ProfileState | null): ProfileSkill[] {
 }
 
 function getCurrentItemId(items: RoadmapItem[], progress: ProfileState["progress"]) {
+  const activeItem = items.find((item) => item.status === "in_progress");
+
+  if (activeItem) {
+    return activeItem.item_id;
+  }
+
+  if (progress?.next_item?.status === "not_started") {
+    return progress.next_item.item_id;
+  }
+
+  if (progress?.current_item?.status === "not_started") {
+    return progress.current_item.item_id;
+  }
+
   return (
-    progress?.current_item?.item_id ??
-    items.find((item) => item.status === "in_progress" || item.status === "pending_check")?.item_id ??
     items.find((item) => item.status === "not_started")?.item_id ??
+    items.find((item) => item.status === "pending_check")?.item_id ??
     null
   );
 }
 
 function mapItemStatus(item: RoadmapItem, currentItemId: string | null): NodeStatus {
-  if (item.status === "completed" || item.status === "completed_late") {
+  if (item.status === "completed" || item.status === "completed_late" || item.status === "pending_check") {
     return "completed";
   }
 
-  if (item.item_id === currentItemId || item.status === "in_progress" || item.status === "pending_check") {
+  if (item.status === "skipped") {
+    return "skipped";
+  }
+
+  if (item.item_id === currentItemId || item.status === "in_progress") {
     return "current";
   }
 
@@ -377,16 +422,12 @@ function mapItemStatus(item: RoadmapItem, currentItemId: string | null): NodeSta
 }
 
 function getItemProgress(item: RoadmapItem, status: NodeStatus) {
-  if (status === "completed") {
-    return 100;
-  }
-
   if (item.status === "pending_check") {
     return 90;
   }
 
-  if (status === "current") {
-    return 65;
+  if (status === "completed") {
+    return 100;
   }
 
   return 0;
@@ -614,8 +655,10 @@ function RoadmapPage({
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
   );
-  const profileMissing = !state && apiError?.includes("USER_PROFILE not found");
-  const roadmapMissing = !loading && !!state && !state.roadmap && state.items.length === 0;
+  const completionPercent = Math.round(state?.progress?.completion_percent ?? profile.progress);
+  const shouldShowFinishModal = Boolean(state?.roadmap && completionPercent >= 80);
+  const [finishModalDismissed, setFinishModalDismissed] = useState(false);
+  const [showNoRoadmapPrompt, setShowNoRoadmapPrompt] = useState(false);
 
   return (
     <section
@@ -623,18 +666,16 @@ function RoadmapPage({
       style={{ backgroundImage: `url(${backgroundUrl})` }}
     >
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(5,8,23,.62),rgba(5,8,23,.28),rgba(5,8,23,.72)),radial-gradient(circle_at_15%_0%,rgba(139,53,255,.28),transparent_34%),radial-gradient(circle_at_100%_18%,rgba(46,232,255,.12),transparent_28%)]" />
-      <div className="relative z-10 flex flex-1 flex-col">
-        <Header roadmapTitle={roadmapTitle} />
-        <ProgressSummary loading={loading} profile={profile} progress={state?.progress ?? null} />
-        {apiError && !profileMissing && (
-          <div className="glass-card relative z-10 mb-4 rounded-3xl border-progressPink/25 p-4 text-sm text-white/72">
-            Backend недоступен или профиль ещё не создан. Показываю моковые данные. Ошибка: {apiError}
-          </div>
-        )}
-        {profileMissing || roadmapMissing ? (
-          <EmptyRoadmapState telegramId={telegramId} />
-        ) : (
+      <div className={`relative z-10 flex flex-1 flex-col ${showNoRoadmapPrompt ? "blur-sm" : ""}`}>
+        {!showNoRoadmapPrompt && (
           <>
+            <Header roadmapTitle={roadmapTitle} />
+            <ProgressSummary loading={loading} profile={profile} progress={state?.progress ?? null} />
+            {apiError && (
+              <div className="glass-card relative z-10 mb-4 rounded-3xl border-progressPink/25 p-4 text-sm text-white/72">
+                Backend недоступен или профиль ещё не создан. Показываю моковые данные. Ошибка: {apiError}
+              </div>
+            )}
             <RoadmapMap nodes={nodes} selectedNodeId={selectedNodeId} onSelect={onSelect} />
             <RoadmapNodeSheet
               node={selectedNode}
@@ -645,6 +686,19 @@ function RoadmapPage({
           </>
         )}
       </div>
+      <AnimatePresence>
+        {shouldShowFinishModal && !finishModalDismissed && !showNoRoadmapPrompt && (
+          <RoadmapFinishModal
+            completionPercent={completionPercent}
+            onCreateRoadmap={openTelegramChat}
+            onStay={() => {
+              setFinishModalDismissed(true);
+              setShowNoRoadmapPrompt(true);
+            }}
+          />
+        )}
+      </AnimatePresence>
+      {showNoRoadmapPrompt && <NoRoadmapPrompt onCreateRoadmap={openTelegramChat} />}
     </section>
   );
 }
@@ -817,6 +871,89 @@ function ProfileStubPage({
         </div>
       </motion.div>
     </section>
+  );
+}
+
+function RoadmapFinishModal({
+  completionPercent,
+  onCreateRoadmap,
+  onStay,
+}: {
+  completionPercent: number;
+  onCreateRoadmap: () => void;
+  onStay: () => void;
+}) {
+  return (
+    <motion.div
+      className="fixed inset-0 z-[90] grid place-items-center bg-[#050817]/72 px-5 backdrop-blur-md"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+    >
+      <motion.section
+        className="w-full max-w-[390px] overflow-hidden rounded-[32px] border border-progressPurple/36 bg-[#0b0a24]/96 p-5 text-center text-white shadow-[0_0_70px_rgba(139,53,255,.36)]"
+        initial={{ opacity: 0, y: 28, scale: 0.94 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 18, scale: 0.96 }}
+        transition={{ type: "spring", stiffness: 280, damping: 24 }}
+      >
+        <div className="relative mx-auto mb-2 grid h-[168px] place-items-center">
+          <div className="absolute inset-x-8 top-8 h-28 rounded-full bg-progressPink/22 blur-3xl" />
+          <img
+            className="relative z-10 h-[154px] object-contain drop-shadow-[0_0_34px_rgba(255,43,191,.46)]"
+            src={happyCatUrl}
+            alt=""
+            draggable={false}
+          />
+        </div>
+        <p className="text-sm font-black uppercase tracking-normal text-progressPink">Маршрут почти пройден</p>
+        <h2 className="mt-2 text-[30px] font-black leading-tight">Ты молодец</h2>
+        <p className="mx-auto mt-3 max-w-[300px] text-[16px] leading-snug text-white/66">
+          Уже закрыто {completionPercent}% пути. Можно создать новый roadmap и выбрать следующую цель.
+        </p>
+
+        <div className="mt-6 rounded-[24px] border border-white/10 bg-white/[0.045] p-4 text-left">
+          <p className="text-[17px] font-black">Что дальше?</p>
+          <div className="mt-4 grid gap-3">
+            <button
+              className="h-14 rounded-2xl bg-gradient-to-r from-progressPink to-progressPurple text-[16px] font-black text-white shadow-neonPink"
+              type="button"
+              onClick={onCreateRoadmap}
+            >
+              Создать новый roadmap
+            </button>
+            <button
+              className="h-12 rounded-2xl border border-white/12 bg-white/[0.035] text-[15px] font-bold text-white/72"
+              type="button"
+              onClick={onStay}
+            >
+              Остаться
+            </button>
+          </div>
+        </div>
+      </motion.section>
+    </motion.div>
+  );
+}
+
+function NoRoadmapPrompt({ onCreateRoadmap }: { onCreateRoadmap: () => void }) {
+  return (
+    <div className="absolute inset-0 z-[60] grid place-items-center px-6 text-center">
+      <motion.button
+        className="glass-card max-w-[360px] rounded-[30px] border-progressPurple/34 p-6 text-white shadow-neonPurple"
+        type="button"
+        onClick={onCreateRoadmap}
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+      >
+        <img className="mx-auto mb-3 h-[118px] object-contain" src={happyCatUrl} alt="" draggable={false} />
+        <h2 className="text-[26px] font-black leading-tight">Пока нет roadmap</h2>
+        <p className="mt-3 text-[16px] leading-snug text-white/66">Давай создадим новый маршрут в Telegram-чате.</p>
+        <span className="mt-5 inline-flex h-12 items-center rounded-2xl bg-gradient-to-r from-progressPink to-progressPurple px-5 text-[15px] font-black text-white">
+          Создать roadmap
+        </span>
+      </motion.button>
+    </div>
   );
 }
 
@@ -1161,9 +1298,11 @@ function RoadmapNodeMarker({
       ? "text-[#63ff64]"
       : node.status === "current"
         ? "text-[#f275ff]"
-        : node.status === "goal"
+        : node.status === "skipped"
           ? "text-[#ffd36c]"
-          : "text-white/60";
+          : node.status === "goal"
+            ? "text-[#ffd36c]"
+            : "text-white/60";
   const nodeSize =
     node.status === "current"
       ? "h-[110px] w-[110px]"
@@ -1277,6 +1416,7 @@ function RoadmapNodeSheet({
     backendItem?.completion_check_type === "note" ||
     backendItem?.completion_check_type === "project";
   const isFutureLocked = node?.status === "locked";
+  const isSkipped = backendItem?.status === "skipped";
   const canStart = Boolean(backendItem && node?.status === "current" && backendItem.status === "not_started");
   const canComplete = Boolean(backendItem && backendItem.status === "in_progress");
   const canSkip = Boolean(
@@ -1290,8 +1430,10 @@ function RoadmapNodeSheet({
       (backendItem.status === "in_progress" ||
         backendItem.status === "pending_check" ||
         backendItem.status === "completed" ||
-        backendItem.status === "completed_late"),
+        backendItem.status === "completed_late" ||
+        backendItem.status === "skipped"),
   );
+  const canRestoreSkipped = Boolean(backendItem && backendItem.status === "skipped");
   const completeDisabled = isUpdating || (requiresCompletionText && !completionText.trim());
   const materials = node?.materials?.length ? node.materials : recommendedMaterials;
   const deadline = formatRoadmapDate(backendItem?.deadline_at ?? null);
@@ -1347,6 +1489,23 @@ function RoadmapNodeSheet({
       await onRefresh();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Не удалось пропустить шаг");
+    } finally {
+      setIsUpdating(false);
+    }
+  }
+
+  async function handleRestoreSkipped() {
+    if (!backendItem || !canRestoreSkipped || isUpdating) {
+      return;
+    }
+
+    setIsUpdating(true);
+    setActionError(null);
+    try {
+      await unskipRoadmapItem(telegramId, backendItem.item_id);
+      await onRefresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Не удалось отправить запрос на возврат шага");
     } finally {
       setIsUpdating(false);
     }
@@ -1509,6 +1668,13 @@ function RoadmapNodeSheet({
                 <InfoBlock title="Пока недоступно" text="Этот шаг откроется после прохождения предыдущих этапов." />
               )}
 
+              {isSkipped && (
+                <InfoBlock
+                  title="Шаг пропущен"
+                  text="Материал не удалён: его можно открыть, изучить как справку или отправить запрос, чтобы вернуть шаг в маршрут."
+                />
+              )}
+
               {backendItem?.status === "pending_check" && (
                 <InfoBlock
                   title="Ответ на проверке"
@@ -1540,6 +1706,18 @@ function RoadmapNodeSheet({
                       Пропустить шаг
                     </button>
                   )}
+                </div>
+              )}
+              {canRestoreSkipped && (
+                <div className="mt-4 grid gap-3">
+                  <button
+                    className="h-14 rounded-2xl bg-gradient-to-r from-progressPink to-progressPurple text-[17px] font-black text-white shadow-neonPink disabled:opacity-45"
+                    type="button"
+                    disabled={isUpdating}
+                    onClick={handleRestoreSkipped}
+                  >
+                    {isUpdating ? "Отправляю..." : "Вернуть в маршрут"}
+                  </button>
                 </div>
               )}
               {actionError && <p className="mt-3 text-sm text-progressPink">{actionError}</p>}

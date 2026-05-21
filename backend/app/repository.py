@@ -373,6 +373,76 @@ async def update_roadmap_status_for_profile(
     return dict(row) if row else None
 
 
+async def complete_roadmap_for_profile(
+    session: AsyncSession,
+    *,
+    profile_id: str,
+    roadmap_id: str,
+    allow_skipped: bool = True,
+    force: bool = False,
+) -> dict[str, Any] | None:
+    roadmap = await get_roadmap_for_profile(
+        session,
+        profile_id=profile_id,
+        roadmap_id=roadmap_id,
+    )
+    if not roadmap:
+        return None
+
+    stats_result = await session.execute(
+        text(
+            """
+            SELECT
+                count(*)::INT AS total_items,
+                count(*) FILTER (WHERE status IN ('completed', 'completed_late'))::INT AS completed_items,
+                count(*) FILTER (WHERE status = 'skipped')::INT AS skipped_items,
+                count(*) FILTER (
+                    WHERE status NOT IN ('completed', 'completed_late', 'skipped')
+                )::INT AS unresolved_items,
+                count(*) FILTER (WHERE status = 'skipped')::INT AS skipped_blocking_items
+            FROM roadmap_item
+            WHERE roadmap_id::TEXT = :roadmap_id
+              AND profile_id = :profile_id
+            """
+        ),
+        {"roadmap_id": roadmap_id, "profile_id": profile_id},
+    )
+    stats = dict(stats_result.mappings().one())
+    blocking_items = stats["unresolved_items"]
+    if not allow_skipped:
+        blocking_items += stats["skipped_blocking_items"]
+
+    if blocking_items > 0 and not force:
+        roadmap["_completion_blocked"] = True
+        roadmap["_completion_stats"] = stats
+        roadmap["_completion_blocking_items"] = blocking_items
+        return roadmap
+
+    result = await session.execute(
+        text(
+            """
+            UPDATE roadmap
+            SET status = 'completed',
+                updated_at = now()
+            WHERE roadmap_id::TEXT = :roadmap_id
+              AND profile_id = :profile_id
+            RETURNING *
+            """
+        ),
+        {"roadmap_id": roadmap_id, "profile_id": profile_id},
+    )
+    row = result.mappings().first()
+    await session.commit()
+    if not row:
+        return None
+
+    completed = dict(row)
+    completed["_completion_blocked"] = False
+    completed["_completion_stats"] = stats
+    completed["_completion_blocking_items"] = 0
+    return completed
+
+
 async def get_roadmap_items(
     session: AsyncSession,
     *,
@@ -573,6 +643,63 @@ async def skip_roadmap_item(
     row = result.mappings().first()
     await session.commit()
     return dict(row) if row else None
+
+
+async def unskip_roadmap_item(
+    session: AsyncSession,
+    *,
+    item_id: str,
+    profile_id: str,
+    start_now: bool = False,
+    note_text: str | None = None,
+) -> dict[str, Any] | None:
+    status = "in_progress" if start_now else "not_started"
+    result = await session.execute(
+        text(
+            """
+            UPDATE roadmap_item
+            SET status = :status,
+                user_note = COALESCE(:note_text, user_note),
+                completed_at = NULL,
+                updated_at = now()
+            WHERE item_id::TEXT = :item_id
+              AND profile_id = :profile_id
+              AND status = 'skipped'
+            RETURNING *
+            """
+        ),
+        {
+            "item_id": item_id,
+            "profile_id": profile_id,
+            "status": status,
+            "note_text": note_text,
+        },
+    )
+    row = result.mappings().first()
+    if row:
+        await session.commit()
+        updated = dict(row)
+        updated["_unskipped"] = True
+        return updated
+
+    existing = await session.execute(
+        text(
+            """
+            SELECT *
+            FROM roadmap_item
+            WHERE item_id::TEXT = :item_id
+              AND profile_id = :profile_id
+            """
+        ),
+        {"item_id": item_id, "profile_id": profile_id},
+    )
+    await session.commit()
+    existing_row = existing.mappings().first()
+    if not existing_row:
+        return None
+    existing_item = dict(existing_row)
+    existing_item["_unskipped"] = False
+    return existing_item
 
 
 async def get_roadmap_feedback(
