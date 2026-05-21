@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai_master import (
@@ -67,6 +68,22 @@ from app.trained_classifier import classify_profile_message_ml as classify_profi
 
 
 app = FastAPI(title="Progressors Learning Backend")
+
+settings = get_settings()
+cors_origins = [
+    origin.strip()
+    for origin in settings.cors_origins.split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _jsonable(data: Any) -> Any:

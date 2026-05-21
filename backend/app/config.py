@@ -6,6 +6,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 DEFAULT_PROMPT_FILE_PATH = Path(__file__).resolve().parents[2] / "INSTUC.txt"
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:3000,"
+    "http://localhost:5173,"
+    "http://localhost:5174,"
+    "http://localhost:8080,"
+    "http://127.0.0.1:3000,"
+    "http://127.0.0.1:5173,"
+    "http://127.0.0.1:5174,"
+    "http://127.0.0.1:8080"
+)
 
 
 class Settings(BaseSettings):
@@ -37,6 +47,11 @@ class Settings(BaseSettings):
     telegram_api_base: str = Field(default="https://api.telegram.org", alias="TELEGRAM_API_BASE")
     prompt_file_path: Path = Field(default=DEFAULT_PROMPT_FILE_PATH, alias="PROMPT_FILE_PATH")
     llm_timeout_seconds: float = Field(default=120.0, alias="LLM_TIMEOUT_SECONDS")
+    cors_origins: str = Field(default=DEFAULT_CORS_ORIGINS, alias="CORS_ORIGINS")
+    cors_origin_regex: str | None = Field(
+        default=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+        alias="CORS_ORIGIN_REGEX",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
