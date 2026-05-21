@@ -6,6 +6,12 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai_master import (
+    build_ai_master_context,
+    build_ai_master_fallback,
+    build_ai_master_prompt,
+    validate_ai_master_output,
+)
 from app.config import get_settings
 from app.classifier import (
     build_profile_snapshot,
@@ -15,6 +21,7 @@ from app.classifier import (
 from app.db import get_session
 from app.llm_client import LlmClient
 from app.prompts import load_prompt, render_prompt
+from app.resource_guard import guard_roadmap_items
 from app.repository import (
     complete_roadmap_item,
     count_sent_pushes_today,
@@ -43,6 +50,7 @@ from app.repository import (
 )
 from app.roadmap_templates import build_template_roadmap
 from app.schemas import (
+    AiMasterRequest,
     AnalyzeProfileRequest,
     ApiResponse,
     CompleteRoadmapItemRequest,
@@ -74,6 +82,32 @@ async def _profile_or_404(session: AsyncSession, telegram_id: int) -> dict[str, 
     if not profile:
         raise HTTPException(status_code=404, detail="USER_PROFILE not found")
     return profile
+
+
+async def _insert_llm_run_best_effort(
+    session: AsyncSession,
+    *,
+    profile_id: str | None,
+    roadmap_id: str | None,
+    prompt_name: str,
+    input_json: dict[str, Any],
+    output_json: dict[str, Any] | None,
+    status: str = "success",
+    error_text: str | None = None,
+) -> None:
+    try:
+        await insert_llm_run(
+            session,
+            profile_id=profile_id,
+            roadmap_id=roadmap_id,
+            prompt_name=prompt_name,
+            input_json=input_json,
+            output_json=output_json,
+            status=status,
+            error_text=error_text,
+        )
+    except Exception:
+        await session.rollback()
 
 
 def _bounded_limit(value: int, *, default: int = 20, maximum: int = 100) -> int:
@@ -161,6 +195,12 @@ async def analyze_profile(
         model=settings.llm_model,
         temperature=settings.llm_temperature,
         json_mode=settings.llm_json_mode,
+        ollama_fallback_enabled=settings.ollama_fallback_enabled,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_model=settings.ollama_model,
+        ollama_timeout_seconds=settings.ollama_timeout_seconds,
+        ollama_num_ctx=settings.ollama_num_ctx,
+        ollama_num_predict=settings.ollama_num_predict,
     )
     try:
         llm_output = await llm_client.run_prompt(
@@ -191,7 +231,7 @@ async def analyze_profile(
             "Need_question": backend_decision["Need_question"],
             "Next_question": backend_decision["Next_question"],
             "Ready_for_roadmap_generation": backend_decision["Ready_for_roadmap_generation"],
-            "Fallback_reason": f"LLM request failed: {exc}",
+            "Fallback_reason": f"LLM request failed: {exc!r}",
         }
         updated_profile = await update_user_profile(
             session,
@@ -206,7 +246,7 @@ async def analyze_profile(
             input_json=variables,
             output_json=fallback_output,
             status="failed",
-            error_text=str(exc),
+            error_text=repr(exc),
         )
         return ApiResponse(
             data={
@@ -324,6 +364,168 @@ async def get_profile_state(
             "user_profile": _jsonable(profile),
             "current_roadmap": _jsonable(roadmap),
             "roadmap_items": _jsonable(items),
+        }
+    )
+
+
+@app.post("/api/ai_master", response_model=ApiResponse)
+@app.post("/api/ai-master", response_model=ApiResponse)
+async def ai_master(
+    request: AiMasterRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    settings = _settings()
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="QUESTION is empty")
+
+    profile = await _profile_or_404(session, request.telegram_id)
+    profile_id = str(profile["user_id"])
+
+    roadmap = await get_current_roadmap_for_profile(session, profile_id=profile_id)
+    items: list[dict[str, Any]] = []
+    progress: dict[str, Any] | None = None
+    if roadmap:
+        roadmap_id = str(roadmap["roadmap_id"])
+        items = await get_roadmap_items(session, roadmap_id=roadmap_id)
+        progress = await get_roadmap_progress(
+            session,
+            roadmap_id=roadmap_id,
+            profile_id=profile_id,
+        )
+    else:
+        roadmap_id = None
+
+    current_datetime = request.current_datetime or datetime.now(UTC)
+    context = build_ai_master_context(
+        profile=profile,
+        roadmap=roadmap,
+        items=items,
+        progress=progress,
+    )
+    variables = {
+        "CURRENT_DATETIME": current_datetime.isoformat(),
+        "USER_QUESTION": question,
+        "AI_MASTER_CONTEXT_JSON": context,
+        "DIALOG_HISTORY": request.dialog_history,
+    }
+    prompt = build_ai_master_prompt(
+        question=question,
+        context=context,
+        dialog_history=request.dialog_history,
+        current_datetime=current_datetime,
+    )
+
+    llm_client = LlmClient(
+        api_llm=settings.api_llm,
+        timeout_seconds=settings.llm_timeout_seconds,
+        use_local=settings.use_local_llm,
+        local_model_name=settings.local_llm_model,
+        provider=settings.llm_provider,
+        api_base_url=settings.llm_api_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        temperature=min(settings.llm_temperature, 0.1),
+        json_mode=settings.llm_json_mode,
+        ollama_fallback_enabled=settings.ollama_fallback_enabled,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_model=settings.ollama_model,
+        ollama_timeout_seconds=settings.ollama_timeout_seconds,
+        ollama_num_ctx=settings.ollama_num_ctx,
+        ollama_num_predict=settings.ollama_num_predict,
+    )
+
+    try:
+        llm_output = await llm_client.run_prompt(
+            prompt_name="ai_master",
+            prompt=prompt,
+            variables=variables,
+        )
+    except Exception as exc:
+        fallback_output = build_ai_master_fallback(
+            question=question,
+            context=context,
+            reason=f"LLM request failed: {exc!r}",
+        )
+        await _insert_llm_run_best_effort(
+            session,
+            profile_id=profile_id,
+            roadmap_id=roadmap_id,
+            prompt_name="ai_master",
+            input_json=variables,
+            output_json={"fallback_output": fallback_output},
+            status="failed",
+            error_text=repr(exc),
+        )
+        return ApiResponse(
+            data={
+                "answer": fallback_output["answer"],
+                "ai_master_output": fallback_output,
+                "llm_output": None,
+                "llm_status": "failed_guarded_fallback",
+                "guard": {
+                    "passed": False,
+                    "status": "fallback",
+                    "errors": ["llm_request_failed"],
+                },
+                "user_profile": _jsonable(profile),
+                "current_roadmap": _jsonable(roadmap),
+                "progress": _jsonable(progress),
+            }
+        )
+
+    guard = validate_ai_master_output(llm_output, context)
+    if not guard["passed"]:
+        fallback_output = build_ai_master_fallback(
+            question=question,
+            context=context,
+            reason=";".join(guard["errors"]),
+        )
+        await _insert_llm_run_best_effort(
+            session,
+            profile_id=profile_id,
+            roadmap_id=roadmap_id,
+            prompt_name="ai_master",
+            input_json=variables,
+            output_json={
+                "llm_output": llm_output,
+                "guard": guard,
+                "fallback_output": fallback_output,
+            },
+            status="failed",
+            error_text=";".join(guard["errors"]),
+        )
+        return ApiResponse(
+            data={
+                "answer": fallback_output["answer"],
+                "ai_master_output": fallback_output,
+                "llm_output": llm_output,
+                "llm_status": "blocked_guarded_fallback",
+                "guard": guard,
+                "user_profile": _jsonable(profile),
+                "current_roadmap": _jsonable(roadmap),
+                "progress": _jsonable(progress),
+            }
+        )
+
+    await _insert_llm_run_best_effort(
+        session,
+        profile_id=profile_id,
+        roadmap_id=roadmap_id,
+        prompt_name="ai_master",
+        input_json=variables,
+        output_json={"llm_output": llm_output, "guard": guard},
+    )
+    return ApiResponse(
+        data={
+            "answer": llm_output["answer"],
+            "ai_master_output": llm_output,
+            "llm_output": llm_output,
+            "llm_status": "ok",
+            "guard": guard,
+            "user_profile": _jsonable(profile),
+            "current_roadmap": _jsonable(roadmap),
+            "progress": _jsonable(progress),
         }
     )
 
@@ -663,6 +865,12 @@ async def generate_roadmap(
         model=settings.llm_model,
         temperature=settings.llm_temperature,
         json_mode=settings.llm_json_mode,
+        ollama_fallback_enabled=settings.ollama_fallback_enabled,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_model=settings.ollama_model,
+        ollama_timeout_seconds=settings.ollama_timeout_seconds,
+        ollama_num_ctx=settings.ollama_num_ctx,
+        ollama_num_predict=settings.ollama_num_predict,
     )
     try:
         llm_output = await llm_client.run_prompt(
@@ -675,7 +883,49 @@ async def generate_roadmap(
     except Exception as exc:
         llm_output = build_template_roadmap(profile, now=current_datetime)
         generation_status = "llm_failed_template_fallback"
-        generation_error = str(exc)
+        generation_error = repr(exc)
+
+    resource_guard_report = None
+    if settings.resource_guard_enabled and generation_status == "ok":
+        original_items = llm_output.get("Roadmap_items_insert") or []
+        llm_metadata = {
+            key: llm_output[key]
+            for key in (
+                "_llm_provider",
+                "_llm_model",
+                "_llm_fallback_used",
+                "_llm_fallback_reason",
+            )
+            if key in llm_output
+        }
+        resource_guard_report = await guard_roadmap_items(
+            original_items,
+            timeout_seconds=settings.resource_guard_http_timeout_seconds,
+            max_html_bytes=settings.resource_guard_max_html_bytes,
+        )
+        llm_output["Resource_guard"] = resource_guard_report
+
+        if resource_guard_report["accepted_count"] < settings.resource_guard_min_items:
+            llm_output = build_template_roadmap(profile, now=current_datetime)
+            llm_output.update(llm_metadata)
+            llm_output["Resource_guard"] = resource_guard_report
+            generation_status = "resource_guard_template_fallback"
+            generation_error = (
+                "Resource guard accepted "
+                f"{resource_guard_report['accepted_count']} of {len(original_items)} generated items"
+            )
+        else:
+            llm_output["Roadmap_items_insert"] = resource_guard_report["items"]
+    elif settings.resource_guard_enabled:
+        resource_guard_report = {
+            "classifier": "resource_quality_v1",
+            "status": "skipped",
+            "reason": generation_status,
+            "accepted_count": len(llm_output.get("Roadmap_items_insert") or []),
+            "rejected_count": 0,
+            "results": [],
+        }
+        llm_output["Resource_guard"] = resource_guard_report
 
     profile_update = llm_output.get("User_profile_update") or {}
     updated_profile = await update_user_profile(
@@ -705,6 +955,7 @@ async def generate_roadmap(
     return ApiResponse(
         data={
             "generation_status": generation_status,
+            "resource_guard": resource_guard_report,
             "llm_output": llm_output,
             "user_profile": _jsonable(updated_profile),
             "created": _jsonable(bundle),
@@ -784,6 +1035,12 @@ async def correct_roadmap_by_feedback(
         model=settings.llm_model,
         temperature=settings.llm_temperature,
         json_mode=settings.llm_json_mode,
+        ollama_fallback_enabled=settings.ollama_fallback_enabled,
+        ollama_base_url=settings.ollama_base_url,
+        ollama_model=settings.ollama_model,
+        ollama_timeout_seconds=settings.ollama_timeout_seconds,
+        ollama_num_ctx=settings.ollama_num_ctx,
+        ollama_num_predict=settings.ollama_num_predict,
     )
     try:
         llm_output = await llm_client.run_prompt(
@@ -800,7 +1057,7 @@ async def correct_roadmap_by_feedback(
             input_json=variables,
             output_json=None,
             status="failed",
-            error_text=str(exc),
+            error_text=repr(exc),
         )
         return ApiResponse(
             data={
@@ -810,7 +1067,7 @@ async def correct_roadmap_by_feedback(
                 "changed_items": [],
                 "pushes": [],
                 "correction_status": "llm_failed",
-                "correction_error": str(exc),
+                "correction_error": repr(exc),
             }
         )
 

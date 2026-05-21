@@ -1,4 +1,3 @@
-import copy
 import math
 import re
 from collections import Counter, defaultdict
@@ -60,39 +59,6 @@ class NaiveBayesTextClassifier:
         return {"label": label, "confidence": round(probs[label], 4), "scores": probs}
 
 
-DIRECTION_SAMPLES = [
-    ("хочу стать программистом", "programming"),
-    ("хочу в it и писать код", "programming"),
-    ("интересует разработка приложений", "programming"),
-    ("хочу делать backend и api", "programming"),
-    ("пишу скрипты на python", "programming"),
-    ("серверная часть, базы данных, авторизация", "programming"),
-    ("хочу делать сайты на react", "programming"),
-    ("python fastapi postgresql", "programming"),
-    ("want to become backend developer", "programming"),
-    ("learn frontend javascript react", "programming"),
-    ("хочу стать ui ux дизайнером", "design"),
-    ("хочу проектировать интерфейсы", "design"),
-    ("дизайн мобильных приложений", "design"),
-    ("figma прототипы пользовательский опыт", "design"),
-    ("хочу делать красивые экраны", "design"),
-    ("ux research и usability test", "design"),
-    ("визуальный дизайн и композиция", "design"),
-    ("interface design in figma", "design"),
-    ("хочу изучить smm", "marketing"),
-    ("маркетинг для малого бизнеса", "marketing"),
-    ("продвигать кофейню в соцсетях", "marketing"),
-    ("контент план посты реклама метрики", "marketing"),
-    ("digital marketing and ads", "marketing"),
-    ("seo таргет воронка продаж", "marketing"),
-    ("вести telegram канал бренда", "marketing"),
-    ("хочу подтянуть математику", "math"),
-    ("алгебра геометрия подготовка к экзамену", "math"),
-    ("изучить английский язык", "language"),
-    ("speaking english grammar vocabulary", "language"),
-]
-
-
 TRACK_SAMPLES = [
     ("python backend fastapi postgresql", "python_backend"),
     ("делать api на python и fastapi", "python_backend"),
@@ -123,51 +89,7 @@ TRACK_SAMPLES = [
 ]
 
 
-LEVEL_SAMPLES = [
-    ("я новичок и начинаю с нуля", "beginner"),
-    ("ничего не знаю в этой теме", "beginner"),
-    ("никогда не программировал", "beginner"),
-    ("только стартую и хочу базу", "beginner"),
-    ("beginner from scratch no experience", "beginner"),
-    ("пока вообще не разбираюсь", "beginner"),
-    ("знаю основы python", "basic"),
-    ("умею базово в figma", "basic"),
-    ("немного писал скрипты", "basic"),
-    ("делал простые проекты для себя", "basic"),
-    ("чуть чуть разбираюсь но хочу системно", "basic"),
-    ("basic knowledge some practice", "basic"),
-    ("в api и базах почти не шарю но код писал", "basic"),
-    ("работаю разработчиком два года", "professional"),
-    ("есть коммерческий опыт", "professional"),
-    ("middle developer хочу прокачаться", "professional"),
-    ("senior хочу углубиться", "professional"),
-    ("уже делал реальные проекты для клиентов", "professional"),
-    ("professional experience several years", "professional"),
-]
-
-
-PREFERENCE_SAMPLES = [
-    ("хочу больше практики и заданий", "practice"),
-    ("нужны упражнения и проекты руками", "practice"),
-    ("хочу кейсы шаблоны и задачи", "practice"),
-    ("practice tasks exercises project based", "practice"),
-    ("лучше читать статьи и документацию", "article"),
-    ("люблю текстовые материалы и конспекты", "article"),
-    ("нужны статьи туториалы и гайды", "article"),
-    ("articles docs text guides", "article"),
-    ("хочу видео лекции и youtube", "video"),
-    ("мне удобно смотреть видеоуроки", "video"),
-    ("video course lectures", "video"),
-    ("без длинных видео", "no_long_video"),
-    ("не люблю видео лучше текст", "no_long_video"),
-    ("without long videos no video", "no_long_video"),
-]
-
-
-DIRECTION_MODEL = NaiveBayesTextClassifier(DIRECTION_SAMPLES)
 TRACK_MODEL = NaiveBayesTextClassifier(TRACK_SAMPLES)
-LEVEL_MODEL = NaiveBayesTextClassifier(LEVEL_SAMPLES)
-PREFERENCE_MODEL = NaiveBayesTextClassifier(PREFERENCE_SAMPLES)
 
 
 TRACK_META = {
@@ -246,16 +168,6 @@ def _default_preference_json() -> dict[str, Any]:
     }
 
 
-def _merge_json(base: dict[str, Any] | None, update: dict[str, Any] | None) -> dict[str, Any]:
-    result = copy.deepcopy(base or {})
-    for key, value in (update or {}).items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _merge_json(result[key], value)
-        else:
-            result[key] = value
-    return result
-
-
 def _parse_time(message: str) -> dict[str, Any]:
     text = _norm(message)
     range_match = re.search(r"(\d{1,2})\s*[-–]\s*(\d{1,2})\s*(час|ч|hour|h)", text)
@@ -279,7 +191,6 @@ def _parse_time(message: str) -> dict[str, Any]:
 
 def _classify_preferences(message: str) -> dict[str, Any]:
     text = _norm(message)
-    prediction = PREFERENCE_MODEL.predict(text)
     labels: set[str] = set()
 
     keyword_map = {
@@ -320,7 +231,7 @@ def _classify_preferences(message: str) -> dict[str, Any]:
         "formats": formats,
         "preference_json": preference,
         "labels": sorted(labels),
-        "prediction": prediction,
+        "extractor_type": "keyword_rules",
     }
 
 
@@ -345,6 +256,36 @@ def _track_override(message: str) -> str | None:
     return None
 
 
+def _broad_goal_update(message: str) -> dict[str, Any]:
+    text = _norm(message)
+    if any(marker in text for marker in ("программ", "писать код", "it", "разработ", "developer", "код")):
+        return {
+            "Goal_text": "Изучение программирования",
+            "Direction": "programming",
+        }
+    if any(marker in text for marker in ("дизайн", "интерфейс", "figma", "ux", "ui")):
+        return {
+            "Goal_text": "Изучение дизайна",
+            "Direction": "design",
+        }
+    if any(marker in text for marker in ("маркетинг", "продвиж", "реклам", "контент", "smm", "seo")):
+        return {
+            "Goal_text": "Изучение маркетинга",
+            "Direction": "marketing",
+        }
+    if any(marker in text for marker in ("математ", "алгебр", "геометр")):
+        return {
+            "Goal_text": "Изучение математики",
+            "Direction": "math",
+        }
+    if any(marker in text for marker in ("английск", "english", "язык", "grammar", "speaking")):
+        return {
+            "Goal_text": "Изучение языка",
+            "Direction": "language",
+        }
+    return {}
+
+
 def _level_override(message: str) -> str | None:
     text = _norm(message)
     if any(marker in text for marker in ("с нуля", "нович", "ничего не знаю", "никогда не", "только начинаю", "from scratch", "beginner")):
@@ -359,9 +300,7 @@ def _level_override(message: str) -> str | None:
 
 
 def classify_profile_message_ml(message: str) -> dict[str, Any]:
-    direction = DIRECTION_MODEL.predict(message)
     track = TRACK_MODEL.predict(message)
-    level = LEVEL_MODEL.predict(message)
     time_info = _parse_time(message)
     preferences = _classify_preferences(message)
 
@@ -371,9 +310,8 @@ def classify_profile_message_ml(message: str) -> dict[str, Any]:
 
     if selected_track in TRACK_META:
         update.update(TRACK_META[selected_track])
-    elif direction["confidence"] >= 0.5:
-        update["Direction"] = direction["label"]
-        update["Goal_text"] = f"Изучение направления: {direction['label']}"
+    else:
+        update.update(_broad_goal_update(message))
 
     if selected_level:
         update["Current_level"] = selected_level
@@ -389,11 +327,11 @@ def classify_profile_message_ml(message: str) -> dict[str, Any]:
     return {
         "User_profile_update": update,
         "signals": {
-            "direction": direction,
             "track": track,
-            "level": level,
+            "level": "keyword_rules" if selected_level else None,
             "time": time_info["signal"],
             "preferences": preferences["labels"],
-            "classifier_type": "trained_naive_bayes",
+            "classifier_type": "single_track_naive_bayes",
+            "rule_extractors": ["level", "time", "preferences", "broad_goal"],
         },
     }

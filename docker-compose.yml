@@ -35,6 +35,12 @@ services:
       LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash-lite}
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
       LLM_JSON_MODE: ${LLM_JSON_MODE:-true}
+      OLLAMA_FALLBACK_ENABLED: ${OLLAMA_FALLBACK_ENABLED:-true}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-600}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-8192}
       USE_LOCAL_LLM: ${USE_LOCAL_LLM:-false}
       LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}
       API_LLM: ${API_LLM:-http://host.docker.internal:8080/dump}

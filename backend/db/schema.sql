@@ -203,7 +203,7 @@ CREATE TABLE IF NOT EXISTS llm_run (
     roadmap_id UUID REFERENCES roadmap(roadmap_id) ON DELETE SET NULL,
 
     prompt_name TEXT NOT NULL CHECK (
-        prompt_name IN ('profile_analysis', 'roadmap_generation', 'roadmap_correction')
+        prompt_name IN ('profile_analysis', 'roadmap_generation', 'roadmap_correction', 'ai_master')
     ),
 
     input_json JSONB NOT NULL,

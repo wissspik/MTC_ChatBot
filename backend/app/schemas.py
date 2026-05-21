@@ -85,6 +85,13 @@ class SendNotificationsRequest(BaseModel):
     current_datetime: datetime | None = None
 
 
+class AiMasterRequest(BaseModel):
+    telegram_id: int
+    question: str = Field(min_length=1, max_length=2000)
+    dialog_history: list[dict[str, Any]] = Field(default_factory=list)
+    current_datetime: datetime | None = None
+
+
 class ApiResponse(BaseModel):
     ok: bool = True
     data: dict[str, Any]
